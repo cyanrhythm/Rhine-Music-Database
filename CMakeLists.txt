@@ -7,6 +7,7 @@ set(RHINE_APPLICATION_ID "rhine.music.database")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+# 最低版本与 scripts/qt-kit.cjs 保持一致；构建脚本会在两者漂移时失败。
 find_package(
     Qt6 6.8 REQUIRED
     COMPONENTS Core

@@ -145,6 +145,19 @@ npm run share
 
 `npm run share` 将完整部署目录打包为 ZIP。运行时不需要开发工具、Python 或额外安装 Node；不能只分发 EXE。
 
+MSYS2 的 mingw64 工具链同样可用。所需 Qt 必须带私有头（`Qt6GuiPrivate`、`Qt6MultimediaPrivate`），
+且 `fxc.exe`（Windows SDK）必须在 PATH 上，否则 HLSL 着色器变体无法编译。构建脚本按导入表补齐
+MinGW 运行库与 Qt 的三方依赖，工具链由 CMake 缓存自动识别，也可用 `RHINE_TOOLCHAIN=mingw` 显式指定：
+
+```sh
+export QT_ROOT=/mingw64
+npm run build
+npm test
+```
+
+Qt 版本由 `scripts/qt-kit.cjs` 单点定义：最低 6.8、发布固定 6.8.3、本机默认 6.12。私有头把产物绑定到
+具体 kit，因此发布构建与 CI 在版本不一致时直接失败，本地开发只提示。
+
 ### 开发与测试
 
 默认构建类型为 `Release`。设置 `RHINE_BUILD_TYPE=Debug` 可构建调试版本；`PYTHON` 可覆盖 Python 命令。Qt 6.12+ 安装包含官方 QML Live Preview 工具时，可使用 `npm run preview` 进行热预览。

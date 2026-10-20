@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include "Glyphs.h"
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QMatrix4x4>
 #include <QOffscreenSurface>
@@ -55,6 +56,18 @@ static float n(QJsonObject o, const char *k) {
 }
 static QVector4D v4(QVector3D v, float w = 0) {
     return {v, w};
+}
+QStringList renderResourceGaps(const QString &root) {
+    QStringList gaps;
+    for (const auto *name : {"ao-kernel.bin", "room-pmrem.bin", "dfg-lut.bin", "ao-noise.bin",
+                             "archive-cassette.bin", "archive-cassette-indices.bin",
+                             "archive-cassette.json", "archive-assembly.bin",
+                             "archive-assembly-indices.bin", "archive-assembly.json"}) {
+        if (!QFileInfo::exists(root + "/" + QString::fromLatin1(name))) {
+            gaps.append(QString::fromLatin1(name));
+        }
+    }
+    return gaps;
 }
 static QByteArray read(QString root, QString name) {
     QFile f(root + "/" + name);
@@ -1133,6 +1146,7 @@ class ItemRenderer : public QQuickRhiItemRenderer {
     Engine::MusicTextures musicTextures;
     QImage cover;
     QString root;
+    QStringList gaps;
 
   public:
     void synchronize(QQuickRhiItem *value) override {
@@ -1160,6 +1174,18 @@ class ItemRenderer : public QQuickRhiItemRenderer {
             return;
         }
         if (!renderer) {
+            // 资源由部署步骤生成；缺失时保持空场景，界面、播放与设置仍然可用。
+            if (gaps.isEmpty()) {
+                gaps = renderResourceGaps(root);
+                if (!gaps.isEmpty()) {
+                    qWarning() << "3D scene disabled, missing resources:" << gaps.join(", ");
+                }
+            }
+            if (root.isEmpty() || !gaps.isEmpty()) {
+                cb->beginPass(renderTarget(), Qt::transparent, {1, 0});
+                cb->endPass();
+                return;
+            }
             renderer = std::make_unique<Renderer>(root, rhi());
         }
         renderer->nativeBuffers = buffers;
@@ -1200,6 +1226,12 @@ QQuickRhiItemRenderer *RhiScene::createRenderer() {
  */
 QImage renderReference(const QString &root, const QJsonObject &frame, const QJsonObject &item,
                        const QImage &cover, QSize size, const SceneDrawBuffers &buffers, quint64 *drawCalls) {
+    // 参考渲染只在离线检查中使用；缺资源时返回空图，由调用方判断失败。
+    const auto gaps = renderResourceGaps(root);
+    if (!gaps.isEmpty()) {
+        qWarning() << "Reference render skipped, missing resources:" << gaps.join(", ");
+        return {};
+    }
     std::unique_ptr<QRhi> rhi;
 #ifdef Q_OS_MACOS
     QRhiMetalInitParams params;

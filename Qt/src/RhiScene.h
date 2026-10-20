@@ -3,6 +3,7 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QQuickRhiItem>
+#include <QStringList>
 class Engine;
 class RhiScene : public QQuickRhiItem {
     Q_OBJECT
@@ -25,3 +26,5 @@ class RhiScene : public QQuickRhiItem {
 QImage renderReference(const QString &root, const QJsonObject &frame, const QJsonObject &item,
                        const QImage &cover, QSize size, const SceneDrawBuffers &buffers = {},
                        quint64 *drawCalls = nullptr);
+// 渲染资源由部署步骤生成，属于外部输入；缺失时由调用方拒绝渲染，而不是在渲染线程终止进程。
+QStringList renderResourceGaps(const QString &root);

@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync, execFileSync } = require('node:child_process');
+const qtKit = require('./qt-kit.cjs');
 const root = path.resolve(__dirname, '..');
 process.chdir(root);
 const checkOnly = process.argv.includes('--check');
@@ -96,14 +97,14 @@ async function main() {
             );
         } else if (file.endsWith('.qml')) {
             // 默认只调整排版，不排序导入和属性，保持 QML 初始化顺序。
-            const qtRoot =
-                process.env.QT_ROOT ||
-                (process.platform === 'darwin'
-                    ? path.join(require('node:os').homedir(), 'Qt/6.12.0/macos')
-                    : '');
+            const qtRoot = qtKit.defaultRoot();
             const qmlformat =
                 process.env.QMLFORMAT ||
                 path.join(qtRoot, 'bin', process.platform === 'win32' ? 'qmlformat.exe' : 'qmlformat');
+            // 缺少 kit 时会拼出相对路径，这里显式报错而不是让 spawnSync 抛 ENOENT。
+            if (!process.env.QMLFORMAT && !qtRoot) {
+                throw new Error('Set QT_ROOT or QMLFORMAT to format QML files');
+            }
             formatted = run(qmlformat, ['--indent-width', '4', '--newline', 'unix', file]);
         } else if (file.endsWith('.py')) {
             formatted = run(python, ['-m', 'black', '--quiet', '--config', 'pyproject.toml', '-'], {

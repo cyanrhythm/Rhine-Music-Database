@@ -81,16 +81,24 @@ if mac:
 else:
     debug = (app / "Qt6Cored.dll").is_file()
     suffix = "d.dll" if debug else ".dll"
-    for name in ("msvcp140", "vcruntime140", "vcruntime140_1"):
-        assert (app / (name + suffix)).is_file(), "Missing local MSVC runtime: " + name
+    # 运行库随编译器分发：MSVC 用 VC 运行库，MinGW 用 libstdc++ 与 libwinpthread。
+    mingw = any((app / name).is_file() for name in ("libstdc++-6.dll", "libwinpthread-1.dll"))
+    if mingw:
+        for name in ("libstdc++-6.dll", "libwinpthread-1.dll"):
+            assert (app / name).is_file(), "Missing local MinGW runtime: " + name
+    else:
+        for name in ("msvcp140", "vcruntime140", "vcruntime140_1"):
+            assert (app / (name + suffix)).is_file(), "Missing local MSVC runtime: " + name
     assert not list(app.glob("vc_redist*.exe")), "Portable package must not require a runtime installer"
     assert (app / "Qt6Quick.dll").is_file() or (app / "Qt6Quickd.dll").is_file()
     assert (app / "Qt6Multimedia.dll").is_file() or (
         app / "Qt6Multimediad.dll"
     ).is_file(), "Missing Qt audio runtime"
-    assert (app / "multimedia/windowsmediaplugin.dll").is_file() or (
-        app / "multimedia/windowsmediaplugind.dll"
-    ).is_file(), "Missing Windows native compatibility audio backend"
+    if not mingw:
+        # 官方 MSVC kit 同时提供系统原生后端；以 FFmpeg 构建的系统包没有该插件。
+        assert (app / "multimedia/windowsmediaplugin.dll").is_file() or (
+            app / "multimedia/windowsmediaplugind.dll"
+        ).is_file(), "Missing Windows native compatibility audio backend"
     assert (app / "multimedia/ffmpegmediaplugin.dll").is_file() or (
         app / "multimedia/ffmpegmediaplugind.dll"
     ).is_file(), "Missing default FFmpeg audio backend"

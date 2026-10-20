@@ -5,7 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const root = path.resolve(__dirname, '..');
 const win = process.platform === 'win32';
-const qt = process.env.QT_ROOT || (win ? '' : path.join(require('node:os').homedir(), 'Qt/6.12.0/macos'));
+const qt = require('./qt-kit.cjs').defaultRoot();
 if (!qt) {
     throw new Error('Set QT_ROOT to Qt 6.12+');
 }

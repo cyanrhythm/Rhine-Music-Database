@@ -502,6 +502,11 @@ void Engine::snapshot(QString path) {
     QDir().mkpath(path);
     const QSize size(1920, 1080);
     auto metal = renderReference(root(), m_frame, m_current, cover(), size, scene.drawBuffers);
+    if (metal.isNull()) {
+        // 缺渲染资源时仍导出界面层，便于区分资源缺失与渲染失败。
+        metal = QImage(size, QImage::Format_RGBA8888_Premultiplied);
+        metal.fill(Qt::transparent);
+    }
     saveImageNative(metal, path + "/qt-metal.png");
     QImage hud(size, QImage::Format_RGBA8888_Premultiplied);
     hud.fill(Qt::transparent);
@@ -522,6 +527,12 @@ void Engine::snapshot(QString path) {
 int Engine::selfTest() {
     bool ok =
         ready() && DiscGeometry::validate() && runNativeHostChecks(root()) && runNativeMusicChecks(root());
+    // 光照资源由部署步骤生成；缺失时判为失败，不再等到渲染线程才终止进程。
+    const auto gaps = renderResourceGaps(root());
+    if (!gaps.isEmpty()) {
+        qCritical() << "Missing render resources:" << gaps.join(", ");
+        ok = false;
+    }
     scene.review("archive");
     step(2.101);
     ok &= !m_frame["draws"].toArray().isEmpty() && m_frame["stats"].toObject()["archiveCount"].toInt() > 0;
