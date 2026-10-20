@@ -154,15 +154,16 @@ npm run share
 
 `npm run share` 将完整部署目录打包为 ZIP。运行时不需要开发工具、Python 或额外安装 Node；不能只分发 EXE。
 
-MSYS2 的 mingw64 工具链同样可用。所需 Qt 必须带私有头（`Qt6GuiPrivate`、`Qt6MultimediaPrivate`），
-且 `fxc.exe`（Windows SDK）必须在 PATH 上，否则 HLSL 着色器变体无法编译。构建脚本按导入表补齐
-MinGW 运行库与 Qt 的三方依赖，工具链由 CMake 缓存自动识别，也可用 `RHINE_TOOLCHAIN=mingw` 显式指定：
+MSYS2 的 mingw64 工具链同样可用，`./build-msys-mingw64.sh` 会校验工具链、Qt kit 与随包 Node 后一次跑完构建、回归和打包。
+所需 Qt 必须带私有头（`Qt6GuiPrivate`、`Qt6MultimediaPrivate`），Windows SDK 中需有 `fxc.exe`，否则 HLSL 着色器变体无法编译。
+构建脚本按导入表补齐 MinGW 运行库与 Qt 的三方依赖，工具链由 CMake 缓存自动识别，也可用 `RHINE_TOOLCHAIN=mingw` 显式指定：
 
 ```sh
-export QT_ROOT=/mingw64
-npm run build
-npm test
+export RHINE_NODE_BINARY=/c/tools/node-v22.14.0-win-x64/node.exe
+./build-msys-mingw64.sh --version v0.4.0   # 省略 --version 则产出带时间戳的开发版
 ```
+
+`--no-test` 跳过回归，`--no-share` 只构建，`--dev` 强制开发版，`--clean` 清理旧部署副本。
 
 Qt 版本由 `scripts/qt-kit.cjs` 单点定义：最低 6.8、发布固定 6.8.3、本机默认 6.12。私有头把产物绑定到
 具体 kit，因此发布构建与 CI 在版本不一致时直接失败，本地开发只提示。

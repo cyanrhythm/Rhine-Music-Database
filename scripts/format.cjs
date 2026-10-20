@@ -15,6 +15,7 @@ const configuration = new Set([
     '.prettierrc.json',
     '.cmake-format.json',
     'CMakeLists.txt',
+    'build-msys-mingw64.sh',
     'build.sh',
     'share.sh',
     'Qt/Info.plist.in',

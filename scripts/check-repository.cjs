@@ -23,6 +23,7 @@ const rootFiles = new Set([
     'LICENSE',
     'NOTICE',
     'README.md',
+    'build-msys-mingw64.sh',
     'build.sh',
     'eslint.config.mjs',
     'package-lock.json',
