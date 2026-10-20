@@ -10,6 +10,9 @@ const files = [
     'ao-kernel.bin',
     'ao-noise.bin',
     'dfg-lut.bin',
+    'archive-baked-surface.bin',
+    'archive-baked-light.bin',
+    'archive-baked-normal.bin',
     'archive-cassette.bin',
     'archive-cassette-indices.bin',
     'archive-cassette.json',
@@ -20,6 +23,19 @@ const files = [
     'slots.json',
     'scene-fixture.json',
     'boot-lettering-art.json',
+    ...[
+        'netease-sq',
+        'netease-hires',
+        'netease-jymaster',
+        'netease-jyeffect',
+        'netease-sky',
+        'qq-hq',
+        'qq-sq',
+        'kugou-hq',
+        'kugou-sq',
+        'kugou-hires',
+    ].map((name) => `quality/${name}.png`),
+    'quality/sources.json',
     'misans-glyphs.json',
     ...['light', 'regular', 'demibold', 'bold'].map((w) => `RhineMiSans-${w}.otf`),
 ];
@@ -27,6 +43,7 @@ fs.mkdirSync(out, {
     recursive: true,
 });
 for (const name of files) {
+    fs.mkdirSync(path.dirname(path.join(out, name)), { recursive: true });
     fs.copyFileSync(path.join(root, name), path.join(out, name));
 }
 const bridge = path.join(root, 'MusicBridge');
@@ -138,7 +155,7 @@ fs.writeFileSync(
     JSON.stringify(
         {
             api: '4.41.1',
-            qq: '3.1.5',
+            qq: '3.3.1',
             kugou: 'ba3645f2c89e6b9d4fec82ff783c15287e4c5f43',
             endpoints,
             packages: [...visited]

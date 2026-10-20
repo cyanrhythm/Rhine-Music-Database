@@ -41,6 +41,7 @@ class MusicLibrary : public QObject {
     void selectResult(int index, int lane, bool open = true);
     void next(int direction);
     void loadMoreSource(int lane);
+    void refreshPersonal(int lane);
     void loadTrackPage(int start);
     void sameAlbum();
     void loadSongWiki();
@@ -59,11 +60,13 @@ class MusicLibrary : public QObject {
     QString accountKey() const;
     QString identityName() const;
     bool editable() const {
-        return provider == "netease";
+        return provider == "netease" || provider == "qq";
     }
     bool sourceLoading() const {
-        return searchLoading || personalLoading;
+        return restoringAccount || searchLoading || personalLoading;
     }
+    QString sourceMessage(int lane) const;
+    bool restoringAccount = false;
     quint64 accountGeneration() const {
         return m_accountGeneration;
     }
@@ -145,6 +148,13 @@ class MusicLibrary : public QObject {
     int trackCursor = 0;
     std::optional<QJsonArray> likedIDs;
     QSet<QString> subscriptions;
+    QHash<QString, QString> subscriptionStates;
+    void loadSubscriptionStatus(const QJsonObject &value);
+    QJsonObject capabilities;
+    QString vipLevel = "unknown";
+    void refreshQQFeatures();
+    bool canEditPlaylist(const QJsonObject &value) const;
+    bool canMutate(const QString &route) const;
     QStringList searchHistory;
     QStringList suggestions;
     QString groupName;
@@ -155,6 +165,7 @@ class MusicLibrary : public QObject {
 
   signals:
     void invalidated();
+    void playbackInvalidated();
     void selectionRequested(int index, QJsonObject navigation);
     void modeRequested(QString mode);
     void navigationRequested(QString axis, int direction);
@@ -178,13 +189,17 @@ class MusicLibrary : public QObject {
     quint64 m_directoryGeneration = 0;
     quint64 m_wikiGeneration = 0;
     quint64 m_suggestGeneration = 0;
+    quint64 m_subscriptionGeneration = 0;
     quint64 m_loginGeneration = 0;
     quint64 m_cooldownGeneration = 0;
     MusicApi m_identityApi;
     MusicApi::Valid valid(quint64 token, const quint64 *counter);
     void loadCover(const QJsonObject &value);
     void loadLikedIDs(int lane, quint64 token, QString user);
-    void completePersonal(int lane);
+    void completePersonal(int lane, QString error = {});
+    int m_pendingLane = -1;
+    QString m_accountError;
+    std::array<QString, 5> m_sourceErrors;
     void restoreCachedAccount();
     void rememberIdentityName(QString provider, QString name);
     void reportLoginFailure(const QJsonObject &details, QString message = {});

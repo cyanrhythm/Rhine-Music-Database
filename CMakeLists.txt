@@ -1,7 +1,15 @@
 cmake_minimum_required(VERSION 3.24)
+# 发布版本在构建前由 Action 注入；本地默认版本保持可独立构建。
+set(RHINE_VERSION
+    "0.4.0"
+    CACHE STRING "Application release version")
+option(RHINE_RELEASE_BUILD "Build a versioned public release" OFF)
+if(NOT RHINE_VERSION MATCHES "^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$")
+    message(FATAL_ERROR "RHINE_VERSION must use major.minor.patch")
+endif()
 project(
     RhineMusicDatabase
-    VERSION 0.4.0
+    VERSION ${RHINE_VERSION}
     LANGUAGES CXX)
 set(RHINE_APPLICATION_ID "rhine.music.database")
 set(CMAKE_CXX_STANDARD 20)
@@ -28,6 +36,8 @@ qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
 # 自维护源码和锁定的二维码库构成独立应用目标。
 set(RHINE_APP_SOURCES
+    Qt/src/AppUpdater.cpp
+    Qt/src/AppUpdater.h
     Qt/src/AudioPlayer.cpp
     Qt/src/AudioPlayer.h
     Qt/src/AppStorage.cpp
@@ -36,6 +46,8 @@ set(RHINE_APP_SOURCES
     Qt/src/DiscGeometry.h
     Qt/src/FrameProfiler.cpp
     Qt/src/FrameProfiler.h
+    Qt/src/ProcessMetrics.cpp
+    Qt/src/ProcessMetrics.h
     Qt/src/NativeCards.cpp
     Qt/src/NativeCards.h
     Qt/src/NativePicking.cpp
@@ -43,6 +55,7 @@ set(RHINE_APP_SOURCES
     Qt/src/UiMotion.cpp
     Qt/src/UiMotion.h
     Qt/tests/UiChecks.cpp
+    Qt/tests/SceneEnhancementChecks.cpp
     Qt/tests/NativeHostChecks.cpp
     Qt/tests/NativeMusicChecks.cpp
     Qt/src/Icon.cpp
@@ -101,6 +114,8 @@ set(RHINE_APP_SOURCES
     Qt/src/Hud.h
     Qt/src/RhiScene.cpp
     Qt/src/RhiScene.h
+    Qt/src/OpticalScene.cpp
+    Qt/src/OpticalScene.h
     Qt/src/Glyphs.cpp
     Qt/src/Glyphs.h
     vendor/qrcodegen/qrcodegen.cpp)
@@ -112,14 +127,16 @@ endif()
 # 原生业务和场景由应用与独立回归共用，测试不需要复制整套源码目标。
 set(RHINE_CORE_SOURCES ${RHINE_APP_SOURCES})
 list(FILTER RHINE_CORE_SOURCES EXCLUDE REGEX
-     "/(main|Engine|Icon|RhiScene|Hud|FrameProfiler)\\.(cpp|h)$|/tests/")
+     "/(main|Engine|Icon|RhiScene|OpticalScene|Hud|FrameProfiler)\\.(cpp|h)$|/tests/")
 list(REMOVE_ITEM RHINE_APP_SOURCES ${RHINE_CORE_SOURCES})
 add_library(RhineCore STATIC ${RHINE_CORE_SOURCES})
 target_include_directories(
     RhineCore
     PUBLIC Qt/src
     PRIVATE vendor/qrcodegen)
-target_compile_definitions(RhineCore PUBLIC RHINE_APPLICATION_ID="${RHINE_APPLICATION_ID}")
+target_compile_definitions(
+    RhineCore PUBLIC RHINE_APPLICATION_ID="${RHINE_APPLICATION_ID}" RHINE_VERSION="${PROJECT_VERSION}"
+                     RHINE_RELEASE_BUILD=$<BOOL:${RHINE_RELEASE_BUILD}>)
 target_link_libraries(
     RhineCore
     PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::Concurrent Qt6::Multimedia
@@ -179,6 +196,25 @@ qt_add_shaders(
     Qt/shaders/combineAO.frag
     Qt/shaders/bokehFragment.frag
     Qt/shaders/finalFragment.frag)
+# 增强模式单独打包
+qt_add_shaders(
+    RhineMusicDatabase
+    "rhine_enhancement_shaders"
+    PREFIX
+    "/optical"
+    BASE
+    "Qt/shaders/enhancement"
+    GLSL
+    "150,300es"
+    HLSL
+    50
+    MSL
+    12
+    FILES
+    Qt/shaders/enhancement/opticalGeometry.vert
+    Qt/shaders/enhancement/opticalQuad.vert
+    Qt/shaders/enhancement/opticalSurface.frag
+    Qt/shaders/enhancement/opticalFinalFragment.frag)
 target_compile_definitions(RhineMusicDatabase PRIVATE RHINE_APPLICATION_ID="${RHINE_APPLICATION_ID}"
                                                       $<$<CONFIG:Debug>:QT_QML_DEBUG>)
 target_link_libraries(
@@ -203,15 +239,24 @@ if(APPLE)
                    MACOSX_BUNDLE_BUNDLE_NAME "RHINE MUSIC DATABASE"
                    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Qt/Info.plist.in")
 elseif(WIN32)
+    target_sources(RhineMusicDatabase PRIVATE Qt/src/WindowsGraphics.cpp)
+    target_link_libraries(RhineMusicDatabase PRIVATE dxgi d3d11)
     configure_file(Qt/WindowsIcon.rc.in "${CMAKE_CURRENT_BINARY_DIR}/WindowsIcon.rc" @ONLY)
     target_sources(RhineMusicDatabase PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/WindowsIcon.rc")
+    target_link_libraries(RhineCore PRIVATE psapi)
     target_sources(RhineCore PRIVATE Qt/src/PlatformWindows.cpp)
     target_link_libraries(RhineCore PRIVATE crypt32 shell32 user32 windowsapp runtimeobject
                                             Qt6::MultimediaPrivate)
     target_compile_options(RhineMusicDatabase PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     target_compile_options(RhineCore PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+elseif(UNIX)
+    # Linux 复用同一份原生场景实现；凭据、协议交付和媒体集成由本平台文件补齐。
+    target_sources(RhineCore PRIVATE Qt/src/PlatformLinux.cpp)
+    # 安装后的程序按 AppImage 前缀查找同级 Qt 运行时；构建树仍用 CMake 生成的 kit 路径， 否则 CI 中装在独立目录的 Qt 会在运行测试时找不到。
+    set_target_properties(RhineMusicDatabase PROPERTIES INSTALL_RPATH "\$ORIGIN/../lib")
+    install(TARGETS RhineMusicDatabase RUNTIME DESTINATION bin)
 else()
-    message(FATAL_ERROR "Supported desktop platforms are macOS and Windows")
+    message(FATAL_ERROR "Supported desktop platforms are macOS, Linux and Windows")
 endif()
 # Qt Creator 的普通构建也交付完整应用，不能依赖运行目录里的 output/resources。
 option(RHINE_PACKAGE_APP "Package resources and Qt libraries after a macOS CMake build" ON)
@@ -274,7 +319,7 @@ endif()
 add_test(NAME qt_ui_motion_regression COMMAND RhineUiMotionRegression
                                               "${CMAKE_CURRENT_SOURCE_DIR}/Qt/tests/fixtures/ui-motion.qz")
 qt_add_executable(RhinePlatformRegression Qt/tests/PlatformRegression.cpp Qt/src/AppStorage.cpp
-                  Qt/src/AudioPlayer.cpp)
+                  Qt/src/AudioPlayer.cpp Qt/src/ProcessMetrics.cpp)
 target_include_directories(RhinePlatformRegression PRIVATE Qt/src)
 target_link_libraries(RhinePlatformRegression PRIVATE Qt6::Core Qt6::Gui Qt6::Multimedia
                                                       Qt6::MultimediaPrivate)
@@ -291,6 +336,9 @@ if(WIN32)
                 runtimeobject)
     target_compile_definitions(RhinePlatformRegression PRIVATE RHINE_APPLICATION_ID="${RHINE_APPLICATION_ID}")
     target_compile_options(RhinePlatformRegression PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+elseif(UNIX)
+    # 凭据文件的位置和权限随平台不同，回归测试直接使用真实实现而不是桩。
+    target_sources(RhinePlatformRegression PRIVATE Qt/src/PlatformLinux.cpp)
 endif()
 add_test(NAME qt_platform_regression COMMAND RhinePlatformRegression
                                              "${CMAKE_CURRENT_BINARY_DIR}/platform-regression")
@@ -330,3 +378,11 @@ add_test(NAME qt_native_hud_regression
          COMMAND RhineNativeHudRegression "${CMAKE_CURRENT_SOURCE_DIR}/output/resources"
                  "${CMAKE_CURRENT_SOURCE_DIR}/Qt/tests/fixtures/hud-panels.qz")
 set_tests_properties(qt_native_hud_regression PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+qt_add_executable(RhineUpdaterRegression Qt/tests/AppUpdaterChecks.cpp)
+target_link_libraries(RhineUpdaterRegression PRIVATE RhineCore)
+if(MSVC)
+    target_compile_options(RhineUpdaterRegression PRIVATE /utf-8)
+endif()
+add_test(NAME qt_updater_regression COMMAND RhineUpdaterRegression)
+set_tests_properties(qt_updater_regression PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

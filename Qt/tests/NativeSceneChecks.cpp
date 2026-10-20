@@ -198,6 +198,46 @@ bool runNativeSceneChecks(const QString &root, const QString &fixturePath) {
         }
         compare(56.003, "viewer-reset");
     }
+    // 以实际模型拾取验证偏轴构图，避免只验证矩阵而漏掉鼠标命中路径。
+    NativeScene shifted(root);
+    shifted.review("archive");
+    shifted.reduced(true);
+    shifted.setMode("archive");
+    for (int index = 1; index <= 180; ++index) {
+        shifted.sample(3 + index / 60.0);
+    }
+    const auto baseline = shifted.sample(6.01);
+    const auto topLeft = baseline["stats"].toObject()["topLeft"].toArray();
+    const auto topRight = baseline["stats"].toObject()["topRight"].toArray();
+    std::optional<QPointF> pickedPoint;
+    for (int column = 1; column <= 8 && !pickedPoint; ++column) {
+        for (int row = 1; row <= 8 && !pickedPoint; ++row) {
+            const auto fraction = column / 9.0;
+            const QPointF point(
+                topLeft.at(0).toDouble() * (1 - fraction) + topRight.at(0).toDouble() * fraction,
+                topLeft.at(1).toDouble() * (1 - fraction) + topRight.at(1).toDouble() * fraction + row * 6);
+            const auto cell = shifted.pick(point.x(), point.y());
+            if (cell && shifted.isSelectedCell(*cell)) {
+                pickedPoint = point;
+            }
+        }
+    }
+    shifted.setTrackListView(true);
+    const auto listFrame = shifted.sample(6.02);
+    bool shiftedPick = false;
+    if (pickedPoint) {
+        const auto cell = shifted.pick(pickedPoint->x() - 1920 * 0.08, pickedPoint->y() + 1080 * 0.10);
+        shiftedPick = cell && shifted.isSelectedCell(*cell);
+    }
+    shifted.setTrackListView(false);
+    const auto restored = shifted.sample(6.03);
+    const bool projectionRestored = restored["projection"] == baseline["projection"];
+    const bool listShifted = listFrame["trackListBlend"].toDouble() == 1;
+    if (!pickedPoint || !shiftedPick || !projectionRestored || !listShifted) {
+        qCritical() << "Tab archive shift and picking regression" << bool(pickedPoint) << shiftedPick
+                    << projectionRestored << listShifted;
+        ok = false;
+    }
     qInfo() << "Native scene camera, materials and frame buffers:" << (ok ? "passed" : "FAILED");
     return ok;
 }

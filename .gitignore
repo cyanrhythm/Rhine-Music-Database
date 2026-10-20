@@ -13,6 +13,7 @@ account.dpapi
 # 本地会话和临时工作文件
 /.codex/
 /.agents/
+/.mnemon/
 
 # 本地凭据和机器配置
 .env

@@ -22,10 +22,11 @@
 
 构建产物位于：
 
-| 平台 | 程序 |
-| --- | --- |
-| macOS | `output/RHINE MUSIC DATABASE.app` |
+| 平台    | 程序                                                           |
+| ------- | -------------------------------------------------------------- |
+| macOS   | `output/RHINE MUSIC DATABASE.app`                              |
 | Windows | `output/windows/RHINE MUSIC DATABASE/RHINE MUSIC DATABASE.exe` |
+| Linux   | `output/RhineMusicDatabase-Linux-x86_64.AppImage`              |
 
 **macOS 若提示应用已损坏，需要执行**
 
@@ -35,8 +36,18 @@
 
 Windows 解压完整部署目录后启动 EXE，保留旁边的 Qt DLL、插件、QML 与资源目录。
 MSVC 运行库 DLL 随包提供，无需运行安装器。
-macOS 和 Windows 默认使用 FFmpeg 音频后端。Windows 设置 `QT_MEDIA_BACKEND=windows` 可临时对照原生后端。
-两端播放都会跟随系统默认输出设备
+
+Linux 赋予执行权限后直接运行 AppImage，Qt 运行时、QML 模块、FFmpeg 与 Node 桥接都已随包提供：
+
+```sh
+chmod +x RhineMusicDatabase-Linux-x86_64.AppImage
+./RhineMusicDatabase-Linux-x86_64.AppImage
+```
+
+没有 FUSE 的环境（容器、部分滚动发行版）加上 `--appimage-extract-and-run` 参数同样可以启动。
+
+macOS、Linux 和 Windows 默认使用 FFmpeg 音频后端。Windows 设置 `QT_MEDIA_BACKEND=windows` 可临时对照原生后端。
+各平台播放都会跟随系统默认输出设备
 
 **面板内播放支持网易云、QQ 和酷狗音乐返回的可用音源。网易云官方客户端入口需要安装并注册网易云音乐；QQ 提供来源网页入口，酷狗提供官方网站入口。**
 
@@ -60,15 +71,16 @@ macOS 和 Windows 默认使用 FFmpeg 音频后端。Windows 设置 `QT_MEDIA_BA
 
 ### QQ 音乐
 
-- [x] 歌曲搜索（上游受限时使用搜索提示中的相关歌曲）
+- [x] 关键字搜索
 - [x] 从歌曲浏览专辑与歌手作品
 - [x] 手机 QQ、微信扫码登录
 - [x] 喜欢歌曲、自建及收藏歌单、收藏专辑
 - [x] 自建非公开歌单读取
-- [x] 首页推荐歌曲、榜单、新专辑、分类歌单
+- [x] 每日 30 首、猜你喜欢、推荐歌单、榜单、新专辑、分类歌单、新歌速递
 - [x] 面板内播放与来源网页入口
-- [ ] 完整分页搜索与专辑、歌单、歌手独立搜索
-- [ ] 账号内容编辑（喜欢、收藏及歌单管理）
+- [x] 歌曲、专辑、歌单、歌手独立搜索与分页
+- [x] 红心与取消红心，收藏及取消收藏歌单、专辑
+- [x] 创建、改名、删除本人普通歌单，普通曲库歌曲加歌、移除
 - [x] 同步歌词与逐句滚动
 - [ ] MV、评论社交、电台
 - [ ] 音乐下载
@@ -85,7 +97,6 @@ macOS 和 Windows 默认使用 FFmpeg 音频后端。Windows 设置 `QT_MEDIA_BA
 - [x] 同步歌词与逐句滚动
 - [ ] MV、评论社交、云盘、电台、下载
 
-
 ### 面板本身
 
 - [x] 三维光盘盒、唱片与资料库动画
@@ -100,16 +111,14 @@ macOS 和 Windows 默认使用 FFmpeg 音频后端。Windows 设置 `QT_MEDIA_BA
 - [x] 亮色、暗色、跟随系统与减少动效
 - [x] 音质选择、试听提示与可选替代音源
 - [x] macOS 系统媒体按钮
-- [x] macOS Apple Silicon 与 Windows x64 构建和打包
+- [x] macOS Apple Silicon、Linux x86_64 与 Windows x64 构建和打包
 - [ ] MV 播放
-
-
 
 **音质和完整播放取决于账号权限与音源可用性；返回试听时会明确提示。替代音源默认关闭，开启时使用锁定上游的匹配实现，音质由匹配来源决定，失败时可使用官方入口。本项目不提供音乐下载。**
 
 ## 从源码构建
 
-需要包含 Shader Tools 和 Multimedia 的 Qt **6.8+** desktop kit、CMake 3.24+、Ninja、Python 3、Node.js / npm，以及平台 C++ 编译器。建议两端固定相同 Qt 补丁版本；自动构建使用 Qt 6.8.3 与 Node.js 22.14.0。
+需要包含 Shader Tools 和 Multimedia 的 Qt **6.8+** desktop kit、CMake 3.24+、Ninja、Python 3、Node.js / npm，以及平台 C++ 编译器。建议各平台固定相同 Qt 补丁版本；自动构建使用 Qt 6.8.3 与 Node.js 22.14.0。Linux 还需要 Qt 的私有开发头文件（发行版包名通常是 `qt6-base-private-dev`、`qt6-multimedia-private-dev`）。
 
 `QT_ROOT` 指向 Qt kit 根目录。`RHINE_NODE_BINARY` 和 `RHINE_NODE_LICENSE` 指向官方独立 Node 分发包中的可执行文件与对应许可证；该运行时会随应用打包，不提交到源码仓库。
 
@@ -158,6 +167,23 @@ npm test
 Qt 版本由 `scripts/qt-kit.cjs` 单点定义：最低 6.8、发布固定 6.8.3、本机默认 6.12。私有头把产物绑定到
 具体 kit，因此发布构建与 CI 在版本不一致时直接失败，本地开发只提示。
 
+### Linux x86_64（AppImage）
+
+安装发行版的 Qt 6.8+ 开发包（含 Shader Tools、Multimedia 与私有头文件）、CMake、Ninja、GCC、Python 3 和 Node.js 22。Qt 由系统提供时 `QT_ROOT` 保持默认的 `/usr` 即可：
+
+```sh
+export RHINE_NODE_BINARY="/absolute/path/to/node-v22.14.0-linux-x64/bin/node"
+export RHINE_NODE_LICENSE="/absolute/path/to/node-v22.14.0-linux-x64/LICENSE"
+npm ci
+npm run build
+npm test
+npm run share
+```
+
+`npm run build` 先按依赖闭包收集 Qt 库、平台插件、图像与 TLS 插件和 QML 模块到 `output/RhineMusicDatabase.AppDir`，再用 `appimagetool` 生成 `output/RhineMusicDatabase-Linux-x86_64.AppImage`。`appimagetool` 需自行安装并出现在 `PATH` 中，也可用 `APPIMAGE_TOOL` 指定路径；没有 FUSE 时脚本自动改用 `--appimage-extract-and-run`。
+
+随包的 Node 必须是官方独立分发包：构建脚本会检查 `ldd` 结果，只依赖 glibc 运行库的构建才会被打进 AppImage，发行版自己的 `/usr/bin/node` 动态链接了系统 ICU 等库，会被拒绝。
+
 ### 开发与测试
 
 默认构建类型为 `Release`。设置 `RHINE_BUILD_TYPE=Debug` 可构建调试版本；`PYTHON` 可覆盖 Python 命令。Qt 6.12+ 安装包含官方 QML Live Preview 工具时，可使用 `npm run preview` 进行热预览。
@@ -168,7 +194,7 @@ Qt RHI 使用私有头文件，升级 Qt 后需重新编译并验证。
 
 ## 本机数据与隐私
 
-搜索、歌曲资料、扫码与个人音乐库请求发送至所选音乐平台，封面从网易云、QQ 或酷狗音乐的图片域名加载。原始认证记录仅由 C++ 和 Node 桥处理，并通过系统凭据库加密保存。本项目没有自建的数据收集服务器、分析 SDK 或自动上传诊断功能。
+搜索、歌曲资料、扫码与个人音乐库请求发送至所选音乐平台，封面从网易云、QQ 或酷狗音乐的图片域名加载。原始认证记录仅由 C++ 和 Node 桥处理；macOS 保存在钥匙串，Windows 通过 DPAPI 加密，Linux 保存在 `~/.local/share/RhineMusicDatabase/rhine.music.database/account.credential`（权限 `0600`）。本项目没有自建的数据收集服务器、分析 SDK 或自动上传诊断功能。
 
 登录为可选功能。应用不读取浏览器或官方客户端的登录信息。
 
@@ -182,6 +208,22 @@ Qt RHI 使用私有头文件，升级 Qt 后需重新编译并验证。
 - **[LyricsKit](https://github.com/MxIris-LyricsX-Project/LyricsKit)**：LRC、YRC、KRC 格式解析移植，
   `MusicBridge/lyrics-format.cjs` 单独采用 MPL-2.0，固定版本与许可随包保留。
 - **[Lyrimuse](https://github.com/Yudaotor/lyrimuse)**：统一时间轴、歌词同步与录音版本匹配思路参考。
+
+## 性能面板与诊断
+
+在「设置」中向下滚动至「性能与诊断」，点击「显示 / 隐藏 · F10」，即可打开性能面板；
+也可以按 F10（部分笔记本需 Fn+F10）。设置内容支持滚轮、触控板、上下方向键与侧边箭头滚动，
+原有菜单尺寸和间距保持不变。性能面板支持精简与展开。
+面板显示实际 Qt 呈现帧率、场景提交帧率、帧间隔 P50/P95/P99 与峰值、逻辑/同步/提交 CPU 耗时、
+主进程常驻内存及渲染资源。程序采用按需绘制，静止时低帧率和较长帧间隔属于正常休眠；
+Qt 帧率包含面板刷新。CPU 百分比以单个逻辑核心为 100%，内存和 CPU 不包含 Node 音乐桥接子进程。
+GPU 耗时/占用未采集，同步和提交的 CPU 时间不代表 GPU 执行时间。
+
+点击「开始收集」，复现卡顿后点击「停止并导出」，会在系统文稿目录下的 `RHINE Diagnostics`
+生成 JSON 诊断文件；点击「诊断目录」可打开所在文件夹。每半秒汇总一次，另保留最多 36,000 帧的逐帧呈现/CPU 计时（超出数量在文件中注明），
+最长十分钟自动导出，
+退出程序时也会保存进行中的录制。导出失败可重试。文件只包含性能数值和系统/图形后端信息，
+不包含账号、Cookie、搜索词、曲目、请求内容或截图。关闭面板且未录制时停止性能采样。
 
 ## 开源许可
 

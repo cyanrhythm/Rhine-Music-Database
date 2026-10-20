@@ -1,11 +1,21 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { buildVersion } = require('./release-version.cjs');
 const { spawnSync } = require('node:child_process');
 process.chdir(path.resolve(__dirname, '..'));
 const mac = process.platform === 'darwin';
-const python = process.env.PYTHON || (mac ? 'python3' : 'python');
-const app = mac ? 'output/RHINE MUSIC DATABASE.app' : 'output/windows/RHINE MUSIC DATABASE';
+const win = process.platform === 'win32';
+const linux = process.platform === 'linux';
+// 统一使用 python3：多数发行版不再提供 python 命令。
+const python = process.env.PYTHON || (win ? 'python' : 'python3');
+// 与构建脚本保持同一份部署目录；Linux 交付 AppImage 前缀目录。
+const appPaths = {
+    darwin: 'output/RHINE MUSIC DATABASE.app',
+    linux: 'output/RhineMusicDatabase.AppDir',
+    win32: 'output/windows/RHINE MUSIC DATABASE',
+};
+const app = appPaths[process.platform];
 if (!fs.existsSync(app)) {
     throw Error('Run npm run build first');
 }
@@ -23,7 +33,21 @@ function run(cmd, args) {
     }
 }
 run(python, ['scripts/audit-qt.py', app]);
-const archive = path.resolve(`output/RhineMusicDatabase-${mac ? 'macOS' : 'Windows'}-${Date.now()}.zip`);
+if (linux) {
+    // Linux 直接交付已构建的 AppImage，不再额外压缩，避免二次解包目录。
+    const image = path.resolve('output/RhineMusicDatabase-Linux-x86_64.AppImage');
+    if (!fs.existsSync(image)) {
+        throw Error('AppImage was not built; run npm run build first');
+    }
+    console.log(image);
+    process.exit(0);
+}
+const version = buildVersion();
+const platform = mac ? 'macOS-arm64' : 'Windows-x64';
+const name = version.release
+    ? `RhineMusicDatabase-v${version.version}-${platform}`
+    : `RhineMusicDatabase-${mac ? 'macOS' : 'Windows'}-${Date.now()}`;
+const archive = path.resolve(`output/${name}.zip`);
 if (mac) {
     run('codesign', ['--verify', '--deep', '--strict', app]);
     run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, archive]);

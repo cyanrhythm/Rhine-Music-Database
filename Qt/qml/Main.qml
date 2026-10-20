@@ -32,8 +32,22 @@ Window {
         onActivated: rhine.toggleFullscreen()
     }
     RhiScene {
+        id: originalScene
         anchors.fill: parent
         engine: rhine
+        // 增强画布完全遮住底层；原版只接收预热和取出唱片真正需要的更新。
+        visible: true
+    }
+    Loader {
+        id: sceneEnhancementLoader
+        objectName: "sceneEnhancementLoader"
+        anchors.fill: parent
+        active: rhine.state.sceneEnhancement === true
+        sourceComponent: OpticalScene {
+            objectName: "enhancementComposite"
+            engine: rhine
+            originalSource: originalScene
+        }
     }
     Hud {
         anchors.fill: parent
@@ -279,5 +293,12 @@ Window {
             verticalAlignment: Text.AlignVCenter
             color: "#777777"
         }
+    }
+    Shortcut {
+        sequence: "F10"
+        onActivated: profiler.toggleVisible()
+    }
+    PerformancePanel {
+        z: 1000
     }
 }

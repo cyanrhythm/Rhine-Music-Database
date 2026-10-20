@@ -11,6 +11,16 @@ void NativeHud::wheel(double x, double y, double delta, std::optional<int> steps
     }
     const auto step = steps.value_or(delta < 0 ? 1 : -1);
     auto &music = *m_music;
+    if (modal == "settings") {
+        const auto bounds = modalBounds(width);
+        const auto localY = y - motion.offset;
+        if (!closing && x >= bounds.left() && x <= bounds.right() &&
+            localY >= bounds.top() + SettingsViewportTop && localY <= bounds.top() + SettingsViewportBottom) {
+            settingsScroll =
+                std::clamp(settingsScroll + distance.value_or(step * 50.), 0., settingsScrollMaximum());
+        }
+        return;
+    }
     if (frame["viewer"].toBool()) {
         m_scene.pointer("wheel", x, y, -delta * 8);
         return;

@@ -50,7 +50,13 @@ vec4 surface(Out o, bool front) {
         return vec4(rgb, v.a * o.quality);
     }
     if (m.flags.x == 6) {
-        base = linearColor(texture(cover, vec2(o.uv.x, 1 - o.uv.y)).rgb);
+        // 只旋转盘面采样坐标；圆环几何、外壳、法线和缓存阴影保持不动。
+        vec2 discUV = vec2(o.uv.x, 1 - o.uv.y);
+        if (m.extra.z != 1 || m.extra.w != 0) {
+            vec2 centered = discUV - vec2(.5);
+            discUV = mat2(m.extra.z, -m.extra.w, m.extra.w, m.extra.z) * centered + vec2(.5);
+        }
+        base = linearColor(texture(cover, discUV).rgb);
     }
     if (m.flags.x == 2.0) {
         float coverage =
@@ -119,9 +125,11 @@ vec4 surface(Out o, bool front) {
         float clearLod = log2(float(textureSize(capture, 0).x)) * .025 * clamp(m.optics.x * 2 - 2, 0.0, 1.0);
         float bounded = log2(max(exp2(clearLod), projected * .016 * pow(strength, 1.15)));
         float lod = m.flags.x == 3 ? mix(nativeLod, min(nativeLod, bounded), o.quality) : nativeLod;
+        // 详情封面使用原始采样
+        vec3 transmissionColor =
+            m.optics.w > .5 ? textureLod(capture, rtUV(uv), 0).rgb : transmissionSample(capture, uv, lod).rgb;
         vec3 atten = exp(log(max(m.attenuation.xyz, vec3(.00001))) * length(ray) / max(m.optics.y, .0001));
-        vec3 refracted =
-            (1 - envBRDF(f0, nv, r, lut)) * base * atten * transmissionSample(capture, uv, lod).rgb;
+        vec3 refracted = (1 - envBRDF(f0, nv, r, lut)) * base * atten * transmissionColor;
         diffuse = mix(diffuse, refracted, trans);
     }
     vec3 color = diffuse + directS + indirectS;
@@ -134,7 +142,7 @@ vec4 surface(Out o, bool front) {
                     envSample(env, reflect(-V, N), cr) * intensity * envBRDF(vec3(.04), nv, cr, lut);
         color = color * (1 - cc * f) + coat * cc;
     }
-    if (m.extra.z > 0) {
+    if (m.flags.x != 6 && m.extra.z > 0) {
         alpha = min(.86, alpha + .42 * pow(1 - abs(dot(N, V)), 3.0));
     }
     color = mix(color, g.fogColor.xyz, smoothstep(g.fog.x, g.fog.y, o.viewZ));

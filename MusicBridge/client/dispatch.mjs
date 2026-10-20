@@ -17,10 +17,15 @@ const OPERATIONS = new Set([
     'likedSongs',
     'likedAlbums',
     'playback',
+    'preview',
     'trackPage',
     'discover',
     'categories',
     'lyrics',
+    'mutate',
+    'subscriptionStatus',
+    'capabilities',
+    'vip',
 ]);
 
 function providerFor(route) {
@@ -131,6 +136,7 @@ export async function dispatch(message, request) {
                 ...safeLoginDetails(error),
             },
             cookies: receivedCookies,
+            ...(qqSessions ? { qqSessions } : {}),
         };
     }
 }

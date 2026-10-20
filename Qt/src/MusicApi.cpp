@@ -19,8 +19,8 @@ QString MusicApi::providerName(const QString &provider) {
 
 QJsonObject MusicApi::safeFailure(const QJsonObject &body, bool includePrevious) {
     QJsonObject result;
-    static const QRegularExpression diagnostic(QStringLiteral("^[a-z-]{1,64}$"));
-    for (const auto &name : {"failureStage", "failureReason"}) {
+    static const QRegularExpression diagnostic(QStringLiteral("^[a-z.-]{1,80}$"));
+    for (const auto &name : {"failureStage", "failureReason", "errorKey", "upstreamErrorKey"}) {
         if (body[name].isString() && diagnostic.match(body[name].toString()).hasMatch()) {
             result[name] = body[name];
         }
@@ -33,6 +33,17 @@ QJsonObject MusicApi::safeFailure(const QJsonObject &body, bool includePrevious)
     }
     if (includePrevious && body["lastFailure"].isObject()) {
         result["lastFailure"] = safeFailure(body["lastFailure"].toObject(), false);
+    }
+    if (includePrevious && body["primaryFailure"].isObject()) {
+        result["primaryFailure"] = safeFailure(body["primaryFailure"].toObject(), false);
+    }
+    for (const auto &name : {"retryable", "writeAttempted"}) {
+        if (body[name].isBool()) {
+            result[name] = body[name];
+        }
+    }
+    if (body["verification"] == "unconfirmed") {
+        result["verification"] = "unconfirmed";
     }
     if (body["authExpired"].toBool()) {
         result["authExpired"] = true;

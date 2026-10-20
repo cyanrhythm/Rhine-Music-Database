@@ -55,8 +55,60 @@ const routes = Object.freeze({
 });
 // 沿用上游 main.js 的函数适配方式，只加载允许的接口。
 // 接口和加密文件保持上游原始字节内容。
-const { cookieToJson } = require(path.join(apiRoot, 'util'));
+const { cookieToJson, generateDeviceId } = require(path.join(apiRoot, 'util'));
+const { getXeapiPublicKey } = require(path.join(apiRoot, 'util', 'xeapiKey'));
+const xeapiKeyPath = path.join(require('node:os').tmpdir(), 'xeapi_public_key');
+global.deviceId = generateDeviceId();
+let xeapiPublicKey;
+let xeapiInitializing;
 let requestModule;
+/**
+ * 在真实 XEAPI 请求前准备上游密钥，并让并发请求共享一次初始化或刷新。
+ * 密钥仅写入当前桥接的私有临时目录；不修改上游协议和加密实现。
+ */
+async function prepareXeapiKey() {
+    if (xeapiInitializing) {
+        return xeapiInitializing;
+    }
+    if (!xeapiPublicKey && fs.existsSync(xeapiKeyPath)) {
+        try {
+            const cachedKey = JSON.parse(fs.readFileSync(xeapiKeyPath, 'utf8'));
+            if (cachedKey.publicKey && cachedKey.sk) {
+                xeapiPublicKey = cachedKey;
+                global.deviceId = cachedKey.deviceId || global.deviceId;
+            }
+        } catch {
+            // 损坏的临时缓存不能作为可用密钥，接下来重新向上游注册。
+        }
+    }
+    const nextUpdateTime = Number(xeapiPublicKey?.nextUpdateTime) || 0;
+    const updateAtMs = nextUpdateTime < 1e12 ? nextUpdateTime * 1000 : nextUpdateTime;
+    if (xeapiPublicKey && (!updateAtMs || Date.now() < updateAtMs)) {
+        return;
+    }
+    xeapiInitializing = (async () => {
+        try {
+            const publicKey = await getXeapiPublicKey(xeapiPublicKey || {}, global.deviceId);
+            if (!publicKey.publicKey || !publicKey.sk) {
+                throw new Error('Incomplete XEAPI key');
+            }
+            fs.writeFileSync(xeapiKeyPath, JSON.stringify(publicKey), { mode: 0o600 });
+            xeapiPublicKey = publicKey;
+            // 上游 request 在模块内缓存密钥和会话，刷新后重新载入以使用新密钥。
+            const requestPath = require.resolve(path.join(apiRoot, 'util', 'request'));
+            delete require.cache[requestPath];
+            requestModule = undefined;
+        } catch {
+            // 初始化错误不得悄悄改成旧版码率接口，否则母带等档位会丢失。
+            const error = new Error('网易云音源初始化失败，请重试');
+            error.body = { code: 503, message: error.message };
+            throw error;
+        } finally {
+            xeapiInitializing = undefined;
+        }
+    })();
+    return xeapiInitializing;
+}
 const api = Object.fromEntries(
     Object.values(routes).map((name) => {
         const endpoint = require(path.join(apiRoot, 'module', name + '.js'));
@@ -70,6 +122,9 @@ const api = Object.fromEntries(
                             typeof data.cookie === 'string' ? cookieToJson(data.cookie) : data.cookie || {},
                     },
                     async (...args) => {
+                        if (args[2]?.crypto === 'xeapi') {
+                            await prepareXeapiKey();
+                        }
                         requestModule ||= require(path.join(apiRoot, 'util', 'request'));
                         return requestModule(...args);
                     },
@@ -122,30 +177,7 @@ async function dispatch(message) {
                 ([key]) => !key.startsWith('__') && key !== 'qqmusic_session',
             ),
         );
-        let result;
-        try {
-            result = await api[moduleName](query);
-        } catch (error) {
-            // 文档同时提供 /song/url/v1 与 /song/url。仅在新版密钥初始化不可用时回退，
-            // 不覆盖未公开的 crypto 参数，也不把账号、权限或网络错误当作初始化失败。
-            if (
-                config.url !== '/song/url/v1' ||
-                !/^xeapi public key (?:is missing|response missing sk)$/.test(error.message || '')
-            ) {
-                throw error;
-            }
-            const br =
-                {
-                    standard: 128000,
-                    higher: 192000,
-                    exhigh: 320000,
-                }[query.level] || 999000;
-            result = await api.song_url({
-                id: query.id,
-                br,
-                cookie: query.cookie,
-            });
-        }
+        const result = await api[moduleName](query);
         responseCookies.push(...(result.cookie || []));
         return result.body;
     };

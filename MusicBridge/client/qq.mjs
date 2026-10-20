@@ -1,6 +1,13 @@
 // QQ 数据在此转换成资料库模型；mid 和媒体文件标识保持原值。
 const array = (value) => (Array.isArray(value) ? value : []);
 const identifier = (value) => (/^[a-zA-Z0-9_-]{1,80}$/.test(String(value ?? '')) ? String(value) : '');
+function unconfirmedWrite(message) {
+    const error = new Error(message);
+    error.code = 502;
+    error.writeAttempted = true;
+    error.retryable = false;
+    return error;
+}
 const art = (mid) =>
     mid ? 'https://y.gtimg.cn/music/photo_new/T002R500x500M000' + encodeURIComponent(mid) + '.jpg' : '';
 export function qqItem(raw, kind = 'song') {
@@ -15,7 +22,7 @@ export function qqItem(raw, kind = 'song') {
         } else if (kind === 'album') {
             return d.mid ?? d.album_mid ?? d.albumMID ?? d.albumMid ?? d.albummid;
         } else if (kind === 'artist') {
-            return d.mid ?? d.singermid;
+            return d.mid ?? d.singermid ?? d.singerMID;
         } else {
             return d.tid ?? d.dissid ?? d.disstid ?? d.topId ?? d.id;
         }
@@ -27,7 +34,7 @@ export function qqItem(raw, kind = 'song') {
     } else if (kind === 'album') {
         title = d.name ?? d.album_name ?? d.albumname ?? d.albumName;
     } else if (kind === 'artist') {
-        title = d.name ?? d.singername;
+        title = d.name ?? d.singername ?? d.singerName;
     } else {
         title = d.dirName ?? d.name ?? d.dissname ?? d.topTitle ?? d.title;
     }
@@ -44,12 +51,13 @@ export function qqItem(raw, kind = 'song') {
         title,
         artist:
             kind === 'playlist'
-                ? String(creator.name ?? d.nickname ?? '')
+                ? String(creator.name ?? creator.nick ?? d.nickname ?? '')
                 : singers
                       .map((v) => v.name)
                       .filter(Boolean)
                       .join(' / ') ||
                   d.singerName ||
+                  (typeof d.singer === 'string' ? d.singer : '') ||
                   '',
         artists: singers
             .map((v) => ({
@@ -60,18 +68,28 @@ export function qqItem(raw, kind = 'song') {
         albumID,
         album: album.name ?? d.albumname ?? '',
         mediaId: identifier(d.file?.media_mid ?? d.media_mid ?? d.strMediaMid),
+        songID: Number(d.id ?? d.songid ?? 0),
+        songType: d.type ?? d.songtype ?? null,
         cover:
-            d.albumPicUrl || d.cover || d.picUrl || d.pic || d.logo || art(kind === 'album' ? id : albumID),
+            d.albumPicUrl ||
+            d.cover ||
+            d.picUrl ||
+            d.picurl ||
+            d.singerPic ||
+            d.pic ||
+            d.logo ||
+            art(kind === 'album' ? id : albumID),
         creatorID: String(creator.uin ?? d.uin ?? ''),
         owned: !!d.owned,
         dirId: String(d.dirId ?? d.dirid ?? ''),
         description: d.desc ?? d.description ?? '',
         wiki: '',
-        date: d.time_public ?? d.publicTime ?? d.publishDate ?? '',
+        date: d.time_public ?? d.publicTime ?? d.publishDate ?? d.publish_date ?? '',
         duration: Number(d.interval ?? d.duration ?? 0) * 1000,
         trackCount: Number(d.songNum ?? d.songnum ?? d.total_song_num ?? d.totalNum ?? d.total ?? 0),
         chart: d.chart === true,
         period: d.period ?? '',
+        ...(Number.isSafeInteger(d.play_cnt) && d.play_cnt >= 0 ? { playCount: d.play_cnt } : {}),
     };
 }
 
@@ -125,58 +143,31 @@ export class QQAPI {
     }
 
     async search(text, kind, offset = 0, valid = () => true) {
-        if (kind !== 'song') {
-            throw new Error('QQ 当前支持歌曲搜索，可从歌曲浏览专辑和歌手');
+        const types = { song: 'song', album: 'album', playlist: 'playlist', artist: 'singer' };
+        if (!types[kind]) {
+            throw new Error('不支持的 QQ 搜索类别');
         }
-        const r = this.response(
-            await this.request(
-                '/getSearchByKey',
-                {
-                    key: text,
-                    limit: 30,
-                    page: Math.floor(offset / 30) + 1,
-                },
-                [200],
-                valid,
-            ),
+        const keyword = text.trim();
+        if (!keyword || [...keyword].length > 60) {
+            throw new Error('QQ 搜索关键词需要 1–60 字');
+        }
+        const body = await this.request(
+            '/search',
+            {
+                keyword,
+                type: types[kind],
+                page: Math.floor(offset / 20) + 1,
+                limit: 20,
+            },
+            [200],
+            valid,
         );
-        const data = r.data?.song || {};
-        const raw = array(data.list);
-        const total = Number(data.totalnum ?? 0); // 上游旧搜索可能返回空列表；只补首页相关歌曲，并读取完整媒体标识。
-        if (!raw.length && offset === 0) {
-            const hints = this.response(
-                await this.request(
-                    '/getSmartbox',
-                    {
-                        key: text,
-                    },
-                    [200],
-                    valid,
-                ),
-            );
-            const ids = [
-                ...new Set(
-                    array(hints.data?.song?.itemlist)
-                        .map((v) => identifier(v.mid))
-                        .filter(Boolean),
-                ),
-            ].slice(0, 10);
-            if (ids.length) {
-                const items = await this.songs(ids, valid);
-                return {
-                    items,
-                    total: items.length,
-                    rawCount: items.length,
-                    more: false,
-                    notice: 'QQ 搜索暂不可用，显示相关歌曲',
-                };
-            }
-        }
+        const raw = array(body.items);
         return {
-            items: this.rows(raw),
-            total,
+            items: this.rows(raw, kind),
+            total: Number(body.total ?? 0),
             rawCount: raw.length,
-            more: offset + raw.length < total && raw.length > 0,
+            more: !!body.more,
         };
     }
 
@@ -374,6 +365,114 @@ export class QQAPI {
         return 'QQ 音乐 / 歌曲资料';
     }
 
+    async capabilities(valid = () => true) {
+        const body = await this.request('/login/channels', {}, [200], valid);
+        return body.data?.features || {};
+    }
+
+    async vip(valid = () => true) {
+        const body = await this.request('/user/vip', {}, [200], valid);
+        return { isVip: body.isVip, vipLevel: body.vipLevel || 'unknown' };
+    }
+
+    async subscriptionStatus(kind, id, valid = () => true) {
+        const body = await this.request('/user/subscription-status', { type: kind, ids: id }, [200], valid);
+        return array(body.items).find((entry) => String(entry.id) === String(id))?.status || 'unknown';
+    }
+
+    /**
+     * 把共同编辑操作映射为 3.3.1 文档的 POST JSON 契约。
+     */
+    async mutate(route, values, valid = () => true) {
+        const request = (path, body) => this.request(path, body, [200], valid);
+        if (route === '/like' || route === '/playlist/subscribe' || route === '/album/sub') {
+            const kind = route === '/like' ? 'song' : route.split('/')[1];
+            const state = await this.subscriptionStatus(kind, values.id, valid);
+            if (!['subscribed', 'not-subscribed'].includes(state)) {
+                throw new Error('QQ 收藏状态尚未确认，请刷新后重试');
+            }
+            const enabled = state !== 'subscribed';
+            if (kind === 'song') {
+                const song = await this.writableSong(values.id, valid);
+                const body = await request('/user/song/like', { song, liked: enabled });
+                if (body.liked !== enabled) {
+                    throw unconfirmedWrite('QQ 红心写入未确认，请刷新核实，不要重复提交');
+                }
+                return body;
+            }
+            const body = await request('/user/' + kind + '/subscribe', {
+                [kind === 'album' ? 'id' : 'tid']: values.id,
+                subscribed: enabled,
+            });
+            if (body.subscribed !== enabled) {
+                throw unconfirmedWrite('QQ 收藏写入未确认，请刷新核实，不要重复提交');
+            }
+            return body;
+        }
+        if (route === '/playlist/create' || route === '/playlist/name/update') {
+            const name = String(values.name || '').trim();
+            if (!name || [...name].length > 20) {
+                throw new Error('QQ 歌单名称需要 1–20 字');
+            }
+            const create = route === '/playlist/create';
+            const body = await request(
+                '/user/playlist/' + (create ? 'create' : 'rename'),
+                create ? { name } : { tid: values.id, name },
+            );
+            if (!body.verified) {
+                throw unconfirmedWrite('QQ 歌单写入未确认，请刷新核实，不要重复提交');
+            }
+            return {
+                ...body,
+                playlist: create
+                    ? {
+                          provider: 'qq',
+                          kind: 'playlist',
+                          id: String(body.tid),
+                          key: 'qq:playlist:' + body.tid,
+                          title: body.name,
+                          owned: true,
+                          dirId: String(body.dirId),
+                          trackCount: 0,
+                      }
+                    : undefined,
+            };
+        }
+        if (route === '/playlist/delete') {
+            const body = await request('/user/playlist/delete', { tid: values.id });
+            if (!body.deleted || !body.verified) {
+                throw unconfirmedWrite('QQ 删除结果未确认，请刷新核实，不要重复提交');
+            }
+            return body;
+        }
+        if (route === '/playlist/tracks') {
+            const song = await this.writableSong(values.tracks, valid);
+            const body = await request('/user/playlist/tracks', {
+                tid: values.pid,
+                op: values.op,
+                songs: [{ id: song.id, type: song.type }],
+            });
+            if (body.changed === false) {
+                const expected = values.op === 'add' ? 'present' : 'absent';
+                if (body.verification?.status !== expected) {
+                    throw unconfirmedWrite('QQ 歌单内容未确认，请刷新核实，不要重复提交');
+                }
+            } else if (body.changed !== true) {
+                throw unconfirmedWrite('QQ 未确认歌单修改，请刷新核实');
+            }
+            return body;
+        }
+        throw new Error('QQ 暂不支持此编辑操作');
+    }
+
+    async writableSong(id, valid) {
+        const song = (await this.songs([String(id)], valid, true))[0];
+        if (!song || !Number.isSafeInteger(song.songID) || song.songID <= 0 || song.songType !== 0) {
+            throw new Error('QQ 未确认这首歌是可编辑的普通曲库歌曲');
+        }
+        return { id: song.songID, mid: song.id, type: 0 };
+    }
+
     async account(valid = () => true) {
         const d = await this.request('/user/detail', {}, [200], valid);
         const p = d.profile || {};
@@ -388,35 +487,56 @@ export class QQAPI {
     }
 
     async userPlaylists(uid, valid = () => true) {
-        const d = await this.request(
-            '/user/playlist',
-            {
-                uid,
-            },
-            [200],
-            valid,
-        );
-        const raw = array(d.playlist);
+        const rows = [];
+        const seenOffsets = new Set();
+        let favoriteOffset;
+        let total = 0;
+        let incomplete = false;
+        do {
+            const body = await this.request(
+                '/user/playlist',
+                {
+                    playCount: 1,
+                    ...(favoriteOffset === undefined ? {} : { favoriteOffset }),
+                },
+                [200],
+                valid,
+            );
+            rows.push(...array(body.playlist));
+            total = Math.max(total, Number(body.total || 0));
+            incomplete = !!body.more;
+            const next = body.nextFavoriteOffset;
+            if (
+                !body.more ||
+                !Number.isSafeInteger(next) ||
+                next <= (favoriteOffset ?? -1) ||
+                seenOffsets.has(next)
+            ) {
+                break;
+            }
+            seenOffsets.add(next);
+            favoriteOffset = next;
+        } while (true);
         const items = this.rows(
-            raw.map((v) => ({
-                ...v,
-                owned: typeof v.dirName === 'string' && String(v.uin) === uid,
+            rows.map((value) => ({
+                ...value,
+                owned: typeof value.dirName === 'string' && String(value.uin) === uid,
             })),
             'playlist',
-        ).filter((v) => v.dirId !== '201');
-        // QQ 自建目录和收藏目录的形状不同，不能仅根据 dirId 判断归属。
-        for (const v of items) {
-            if (v.owned) {
-                v.creatorID = uid;
-            } else if (v.creatorID === uid) {
-                v.creatorID = '';
+        ).filter((value) => value.dirId !== '201');
+        for (const value of items) {
+            if (value.owned) {
+                value.creatorID = uid;
+            } else if (value.creatorID === uid) {
+                value.creatorID = '';
             }
         }
         return {
             items,
-            total: Number(d.total ?? items.length),
-            rawCount: raw.length,
+            total: Math.max(total, items.length),
+            rawCount: rows.length,
             more: false,
+            incomplete,
         };
     }
 
@@ -458,7 +578,11 @@ export class QQAPI {
         };
     }
 
-    async playback(value, quality, alternative, valid) {
+    async preview(value, quality, alternative) {
+        return this.playback(value, quality, alternative, () => true, true);
+    }
+
+    async playback(value, quality, alternative, valid = () => true, preview = false) {
         const q =
             {
                 standard: '128',
@@ -467,6 +591,8 @@ export class QQAPI {
                 lossless: 'flac',
                 hires: 'flac',
                 jymaster: 'flac',
+                best: 'best',
+                ape: 'ape',
             }[quality] || '320';
         // 列表缓存并不保证含有媒体文件标识；播放前按文档读取完整歌曲详情。
         const song = (await this.songs([value.id], valid, true))[0];
@@ -481,13 +607,14 @@ export class QQAPI {
                         songmid: song.id,
                         mediaId: song.mediaId || '',
                         quality: level,
+                        ...(preview ? { preview: 1 } : {}),
                     },
                     [200],
                     valid,
                 )
             ).data?.playUrl?.[song.id];
         let track = await request(q);
-        if (!track?.url && q !== '128') {
+        if (!track?.url && q !== '128' && q !== 'best' && !preview) {
             track = await request('128');
             if (track?.url) {
                 return {
@@ -497,74 +624,110 @@ export class QQAPI {
             }
         }
         if (!track?.url) {
+            const hints = {
+                'playback.maybe-membership': 'QQ 提示可能缺少会员权益，可尝试试听或在官方客户端核实',
+                'playback.maybe-region-restricted': 'QQ 提示歌曲可能受地区限制，请在官方客户端核实',
+                'playback.preview-missing': 'QQ 确认这首歌没有试听文件',
+                'playback.preview-unavailable': 'QQ 暂未提供可用试听片段',
+                'playback.quality-file-unavailable': 'QQ 未提供所选音质的文件',
+                'playback.quality-detail-unavailable': 'QQ 无法确认所选音质的文件资料',
+            };
             throw new Error(
-                this.host.authenticated?.()
-                    ? 'QQ 已登录，但平台未返回标准音质音源；请确认该歌曲在 QQ 官方客户端能否播放'
-                    : 'QQ 当前未登录，请用 QQ 或微信扫码登录后重试',
+                hints[track?.restriction?.hint?.key] ||
+                    (this.host.authenticated?.()
+                        ? 'QQ 已登录，但平台未返回标准音质音源；请确认该歌曲在 QQ 官方客户端能否播放'
+                        : 'QQ 当前未登录，请用 QQ 或微信扫码登录后重试'),
             );
         }
         return track;
     }
 
     async discover(tab, offset = 0, category = '全部', valid = () => true) {
-        if (tab === 'playlists' || tab === 'charts') {
-            const r = this.response(await this.request('/getTopLists', {}, [200], valid));
-            const raw = array(r.data?.topList);
+        if (tab === 'playlists' || tab === 'categories') {
+            const categorized = tab === 'categories';
+            let categoryID = category;
+            if (categorized && category === '全部') {
+                categoryID = (await this.categories(valid))[0]?.id;
+                if (!categoryID) {
+                    throw new Error('QQ 暂未提供可用的歌单分类');
+                }
+            }
+            const body = await this.request(
+                categorized ? '/recommend/category-playlists' : '/recommend/playlists',
+                categorized
+                    ? {
+                          id: categoryID,
+                          page: Math.floor(offset / 30) + 1,
+                          limit: 30,
+                      }
+                    : { limit: 30 },
+                [200],
+                valid,
+            );
+            const raw = array(body.playlists);
+            // 推荐流没有续页参数；仅分类接口按照文档提供分页。
+            return {
+                items: this.rows(raw, 'playlist'),
+                rawCount: raw.length,
+                more: categorized && !!body.more,
+                ...(categorized ? { category: String(categoryID) } : {}),
+            };
+        }
+        if (['daily', 'guess', 'new-songs'].includes(tab)) {
+            const routes = {
+                daily: '/user/daily-songs',
+                guess: '/user/guess-you-like',
+                'new-songs': '/recommend/new-songs',
+            };
+            const params = tab === 'new-songs' ? { area: category === '全部' ? '5' : category } : {};
+            const body = await this.request(routes[tab], params, [200], valid);
+            const raw = array(body.songs);
+            const names = { 5: '最新', 1: '内地', 6: '港台', 2: '欧美', 4: '韩国', 3: '日本' };
+            return {
+                items: this.rows(raw),
+                rawCount: raw.length,
+                more: false,
+                ...(tab === 'new-songs'
+                    ? {
+                          areas: array(body.areas).map((area) => ({
+                              id: area.id,
+                              name: names[area.id] || area.name,
+                          })),
+                          area: body.area,
+                      }
+                    : {}),
+            };
+        }
+        if (tab === 'charts') {
+            const body = this.response(await this.request('/getTopLists', {}, [200], valid));
+            const raw = array(body.data?.topList);
             return {
                 items: this.rows(
-                    raw.map((v) => ({
-                        ...v,
-                        id: v.id ?? v.topId,
-                        title: v.topTitle ?? v.title,
+                    raw.map((value) => ({
+                        ...value,
+                        id: value.id ?? value.topId,
+                        title: value.topTitle ?? value.title,
                         chart: true,
                     })),
                     'playlist',
                 ),
-                more: false,
                 rawCount: raw.length,
+                more: false,
             };
         }
-        if (tab === 'daily' || tab === 'albums') {
-            const r = this.response(await this.request('/getRecommend', {}, [200], valid));
-            const d = this.module(r, tab === 'daily' ? 'new_song' : 'new_album');
-            const raw = array(tab === 'daily' ? d.songlist || d.songList : d.albums || d.albumList);
-            return {
-                items: this.rows(raw, tab === 'daily' ? 'song' : 'album'),
-                more: false,
-                rawCount: raw.length,
-            };
-        }
-        if (tab === 'categories') {
-            const r = this.response(
-                await this.request(
-                    '/getSongLists',
-                    {
-                        categoryId: category === '全部' ? '10000000' : category,
-                        limit: 30,
-                        page: Math.floor(offset / 30) + 1,
-                    },
-                    [200],
-                    valid,
-                ),
-            );
-            const d = r.data || {};
-            const raw = array(d.list);
-            return {
-                items: this.rows(raw, 'playlist'),
-                rawCount: raw.length,
-                more: offset + raw.length < Number(d.sum ?? raw.length),
-            };
+        if (tab === 'albums') {
+            const body = this.response(await this.request('/getRecommend', {}, [200], valid));
+            const data = this.module(body, 'new_album');
+            const raw = array(data.albums || data.albumList);
+            return { items: this.rows(raw, 'album'), rawCount: raw.length, more: false };
         }
         throw new Error('QQ 暂不支持此类别');
     }
 
     async categories(valid = () => true) {
-        const r = this.response(await this.request('/getSongListCategories', {}, [200], valid));
-        return array(r.data?.categories)
-            .flatMap((v) => array(v.items))
-            .map((v) => ({
-                id: String(v.categoryId),
-                name: v.categoryName,
-            }));
+        const body = await this.request('/recommend/categories', {}, [200], valid);
+        return array(body.groups)
+            .flatMap((group) => array(group.categories))
+            .map((value) => ({ id: String(value.id), name: value.name }));
     }
 }

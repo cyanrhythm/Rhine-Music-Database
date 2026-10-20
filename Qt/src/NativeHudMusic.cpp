@@ -33,6 +33,19 @@ void NativeHud::musicAction(const QStringList &parts, const QString &value) {
             music.selectResult(raw, music.selectedLane, false);
             m_scene.mode("archive");
         }
+    } else if (name == "index") {
+        // 列表命中使用完整资料库索引，跨列选择仍由既有资料库维护物理唱片位置。
+        const auto values = music.libraryItems();
+        if (!trackListMode || frame["mode"] != "archive" || last < 0 || last >= values.size() ||
+            values.at(last).toObject()["kind"] != "song") {
+            return;
+        }
+        if (music.directory) {
+            music.selectDirectory(last);
+        } else {
+            const auto raw = music.groupLane == music.selectedLane ? music.groupIndices.value(last) : last;
+            music.selectResult(raw, music.selectedLane, false);
+        }
     } else if (name == "result") {
         music.selectResult(parts.value(3).toInt(), parts.value(2).toInt());
         tab = "overview";
@@ -145,6 +158,8 @@ void NativeHud::musicAction(const QStringList &parts, const QString &value) {
         pageResults(name == "page-prev" ? -1 : 1);
     } else if (name == "play") {
         music.play();
+    } else if (name == "preview" && music.provider == "qq") {
+        music.player.play(music.current, std::nullopt, std::nullopt, true);
     } else if (name == "play-next" || name == "enqueue") {
         music.player.enqueue(music.current, name == "play-next");
     } else if (name == "play-loaded") {
@@ -200,6 +215,8 @@ void NativeHud::musicAction(const QStringList &parts, const QString &value) {
         if (QStringList{"qr", "wechat"}.contains(music.loginMethod)) {
             music.startLogin();
         }
+    } else if (name == "refresh-personal") {
+        music.refreshPersonal(musicCollection);
     } else if (name == "like" || name == "like-current") {
         music.like(name == "like" ? QJsonObject() : music.player.current);
     } else if (name == "subscribe") {
@@ -209,7 +226,7 @@ void NativeHud::musicAction(const QStringList &parts, const QString &value) {
         formPID.clear();
         openModal("playlist-form");
     } else if (name == "delete-playlist") {
-        if (!music.directory || music.uid.isEmpty() || music.directory->item["creatorID"] != music.uid) {
+        if (!music.directory || !music.canEditPlaylist(music.directory->item)) {
             return;
         }
         const auto item = music.directory->item;
@@ -237,7 +254,7 @@ void NativeHud::musicAction(const QStringList &parts, const QString &value) {
         };
         openModal("confirm");
     } else if (name == "rename-playlist") {
-        if (music.directory && music.directory->item["creatorID"] == music.uid) {
+        if (music.directory && music.canEditPlaylist(music.directory->item)) {
             formKind = "rename";
             formPID = music.directory->item["id"].toString();
             openModal("playlist-form");

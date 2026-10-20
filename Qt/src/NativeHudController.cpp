@@ -30,6 +30,11 @@ NativeHud::NativeHud(Host *host, Glyphs *glyphs, MusicLibrary *music, HudSceneAc
     }
     dark = themeMode == "system" ? host->systemDark() : themeMode == "dark";
     reduced = host->preference("motion") == "reduced";
+    discRotation = host->preference("disc-rotation") == "on";
+    sceneEnhancement = host->preference("scene-enhancement") != "off";
+    connect(&host->updater, &AppUpdater::updateAvailable, this, [this] {
+        m_music->status = "发现新版本 " + m_host->updater.latestVersion() + "，可在设置中下载更新";
+    });
     connect(music, &MusicLibrary::invalidated, this, &NativeHud::finishPage);
 }
 
@@ -44,6 +49,7 @@ void NativeHud::openModal(QString kind) {
     motion.set(true, lastTime, reduced);
     query.clear();
     listOffset = 0;
+    settingsScroll = 0;
     activeGroup.clear();
     artistTab = "songs";
     if (kind == "saved") {
@@ -264,7 +270,11 @@ void NativeHud::playerAction(const QStringList &parts) {
             m_lyricsBrowse.reset();
         }
     } else if (name == "open") {
-        openModal("player");
+        if (modal == "player" && !closing) {
+            closeModal();
+        } else {
+            openModal("player");
+        }
     } else if (name == "toggle") {
         player.toggle();
     } else if (name == "prev" || name == "next") {
@@ -290,8 +300,39 @@ void NativeHud::playerAction(const QStringList &parts) {
 
 /** 动作字符串保持原有输入协议，控制器直接更新原生音乐状态和场景。 */
 void NativeHud::action(QString value) {
+    if (modal == "settings" && !closing &&
+        (value == "settings:scroll-up" || value == "settings:scroll-down")) {
+        const auto movement = value == "settings:scroll-down" ? 120. : -120.;
+        settingsScroll = std::clamp(settingsScroll + movement, 0., settingsScrollMaximum());
+        return;
+    }
+
+    if (value.startsWith("update:")) {
+        auto &updater = m_host->updater;
+        if (value == "update:check") {
+            updater.check();
+        } else if (value == "update:download") {
+            updater.download();
+        } else if (value == "update:cancel") {
+            updater.cancel();
+        } else if (value == "update:open") {
+            updater.openDownload();
+        } else if (value == "update:release") {
+            updater.openRelease();
+        } else if (value == "update:auto") {
+            const bool enabled = m_host->preference("auto-update") != "off";
+            m_host->setPreference("auto-update", enabled ? "off" : "on");
+        }
+        return;
+    }
     auto &music = *m_music;
     const auto parts = value.split(':');
+    if (value == "archive:tab-mode") {
+        if (modal.isEmpty() && supportsTrackList()) {
+            trackListMode = !trackListMode;
+        }
+        return;
+    }
     if (value.startsWith("tab:")) {
         trackOffset = 0;
         bodyOffset = 0;
@@ -337,6 +378,10 @@ void NativeHud::action(QString value) {
         } else if (name == "item") {
             discover.open(parts.value(2).toInt());
             closeModal();
+        } else if (name == "area" && music.provider == "qq") {
+            listOffset = 0;
+            discover.newSongArea = parts.value(2);
+            discover.load("new-songs");
         } else if (name == "category") {
             listOffset = 0;
             discover.category = decode(parts.value(2));
@@ -396,10 +441,6 @@ void NativeHud::action(QString value) {
         musicAction(parts, value);
         return;
     }
-    if (value == "back") {
-        music.observe(-1);
-        music.observe(frame["selected"].toInt());
-    }
     if (value.startsWith("viewer:")) {
         m_scene.viewer(value.mid(7));
         return;
@@ -424,14 +465,36 @@ void NativeHud::action(QString value) {
         music.player.alternative = !music.player.alternative;
         m_host->setPreference("alternate-source", music.player.alternative ? "on" : "off");
     } else if (value == "quality") {
-        music.player.quality =
-            cycle({"standard", "higher", "exhigh", "lossless", "hires", "jymaster"}, music.player.quality);
-        m_host->setPreference("quality", music.player.quality);
+        QStringList qualities;
+        for (const auto &option : MusicPlayer::qualityOptions(music.provider)) {
+            qualities.append(option.first);
+        }
+        music.player.setQuality(cycle(qualities, music.player.quality));
+    } else if (value == "quality:open") {
+        openModal("quality");
+    } else if (value.startsWith("quality:set:")) {
+        music.player.setQuality(value.mid(12));
+    } else if (value == "disc-rotation") {
+        if (discRotation) {
+            discRotation = false;
+            m_host->setPreference("disc-rotation", "off");
+        } else {
+            openModal("disc-rotation-warning");
+        }
+    } else if (value == "disc-rotation:enable") {
+        discRotation = true;
+        m_host->setPreference("disc-rotation", "on");
+        openModal("settings");
+    } else if (value == "disc-rotation:cancel") {
+        openModal("settings");
     } else if (value == "theme") {
         themeMode = cycle({"light", "dark", "system"}, themeMode);
         dark = themeMode == "system" ? m_host->systemDark() : themeMode == "dark";
         m_scene.theme(dark);
         m_host->setPreference("theme", themeMode);
+    } else if (value == "scene-enhancement") {
+        sceneEnhancement = !sceneEnhancement;
+        m_host->setPreference("scene-enhancement", sceneEnhancement ? "on" : "off");
     } else if (value == "motion") {
         reduced = !reduced;
         m_scene.reduced(reduced);
@@ -441,6 +504,11 @@ void NativeHud::action(QString value) {
 
 void NativeHud::key(QString value, bool command) {
     if (frame.isEmpty()) {
+        return;
+    }
+    if (modal == "settings" && !closing && (value == "ArrowDown" || value == "ArrowUp")) {
+        const auto movement = value == "ArrowDown" ? 50. : -50.;
+        settingsScroll = std::clamp(settingsScroll + movement, 0., settingsScrollMaximum());
         return;
     }
     if (value == "Enter" && command) {
@@ -458,6 +526,10 @@ void NativeHud::key(QString value, bool command) {
     if (!modal.isEmpty()) {
         return;
     }
+    if (value == "Tab" && !command) {
+        action("archive:tab-mode");
+        return;
+    }
     if (value == " ") {
         m_music->player.toggle();
         return;
@@ -473,13 +545,20 @@ void NativeHud::key(QString value, bool command) {
     }
 }
 
+bool NativeHud::supportsTrackList() const {
+    return modal.isEmpty() && frame["mode"] == "archive" && !frame["viewer"].toBool() && !lyricsMode &&
+           m_music->current["kind"] == "song";
+}
+
 bool NativeHud::animating(double time) const {
     if (reduced) {
         return !motion.finished() || closing;
     }
     const bool lyrics = lyricsMode && modal.isEmpty() && m_lyricsCurve &&
                         time - m_lyricsCurve->start < m_lyricsCurve->duration;
-    if (!motion.finished() || lyrics || closing || time - m_resultStart < 0.5) {
+    const bool trackList = trackListMode && frame["mode"] == "archive" && modal.isEmpty() &&
+                           m_trackListCurve && time - m_trackListCurve->start < m_trackListCurve->duration;
+    if (!motion.finished() || lyrics || trackList || closing || time - m_resultStart < 0.5) {
         return true;
     }
     return std::any_of(m_rolling.cbegin(), m_rolling.cend(),

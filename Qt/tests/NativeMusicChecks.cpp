@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
+#include <QMediaDevices>
 #include <QThread>
 #include <QTemporaryDir>
 #include <QUrl>
@@ -74,9 +75,50 @@ bool runNativeMusicChecks(const QString &root) {
         }
         ok &= value;
     };
+    const auto sourceQuality = [](QString provider, QJsonObject audio, bool trial = false) {
+        return MusicPlayer::sourceQuality(provider, audio, trial);
+    };
+    const auto source = [](QString path, QJsonObject fields = {}) {
+        fields["url"] = "https://audio.example/" + path;
+        return fields;
+    };
+    check(sourceQuality("netease", source("song.mp3", {{"level", "standard"}})) == "standard",
+          "actual NetEase downgrade remains standard");
+    check(sourceQuality("netease", source("song.flac", {{"level", "hires"}})) == "hires",
+          "actual NetEase Hi-Res level is retained");
+    check(sourceQuality("netease", source("song.flac", {{"br", 1800000}})) == "sq",
+          "lossless bitrate alone does not imply Hi-Res");
+    check(sourceQuality("netease", source("alternate.mp3", {{"level", "hires"}, {"br", 128000}})) ==
+              "standard",
+          "actual lossy alternate source cannot retain a lossless label");
+    check(sourceQuality("qq", source("M500fixture.mp3", {{"quality", "flac"}})) == "standard",
+          "QQ actual file overrides a misleading requested quality");
+    check(sourceQuality("qq", source("M800fixture.mp3")) == "hq" &&
+              sourceQuality("qq", source("F000fixture.flac")) == "sq" &&
+              sourceQuality("qq", source("A000fixture.ape")) == "sq",
+          "QQ logged-in media prefixes identify HQ and lossless");
+    check(sourceQuality("qq", source("unknown.mp3", {{"quality", "flac"}})).isEmpty(),
+          "QQ unknown file does not inherit requested quality");
+    check(sourceQuality("kugou", source("audio", {{"extName", "flac"}, {"br", 2000000}})) == "sq",
+          "Kugou actual format survives an opaque URL");
+    check(sourceQuality("kugou",
+                        source("audio", {{"extName", "flac"}, {"sampleRate", 96000}, {"bitDepth", 24}})) ==
+              "hires",
+          "Kugou Hi-Res requires actual sample rate and bit depth");
+    check(sourceQuality("netease", source("song.flac", {{"level", "hires"}}), true).isEmpty() &&
+              sourceQuality("netease", {{"level", "hires"}}).isEmpty() &&
+              sourceQuality("kugou", source("opaque", {{"br", 2000000}})).isEmpty(),
+          "preview, absent source and unknown codec never claim quality");
+    for (const auto &badge : {"netease-sq", "netease-hires", "netease-jymaster", "netease-jyeffect",
+                              "netease-sky", "qq-hq", "qq-sq", "kugou-hq", "kugou-sq", "kugou-hires"}) {
+        check(!host.image("quality:" + QString(badge)).isNull(), "official quality image is packaged");
+    }
+    QString returnedQuality = "lossless";
     int nativeSearches = 0;
     int details = 0;
     int mutations = 0;
+    bool rejectQQWrite = false;
+    bool rejectLibrary = false;
     host.fixture = [&](QString route, QJsonObject parameters) {
         const auto args = parameters["args"].toArray();
         QJsonValue value;
@@ -110,13 +152,26 @@ bool runNativeMusicChecks(const QString &root) {
             }
         } else if (route.endsWith("/wiki")) {
             value = "本地百科";
-        } else if (route.endsWith("/playback")) {
-            value = QJsonObject{{"url", audioURL}};
+        } else if (route.endsWith("/playback") || route.endsWith("/preview")) {
+            value = QJsonObject{
+                {"url", audioURL}, {"level", returnedQuality}, {"preview", route.endsWith("/preview")}};
+        } else if (route.endsWith("/mutate")) {
+            ++mutations;
+            if (rejectQQWrite) {
+                return QJsonObject{{"body", QJsonObject{{"code", 502},
+                                                        {"message", "写入未确认"},
+                                                        {"writeAttempted", true},
+                                                        {"retryable", false}}}};
+            }
+            value = QJsonObject{{"liked", true}, {"subscribed", true}};
         } else if (route.endsWith("/account")) {
             value = QJsonArray{"42", "本地账号"};
         } else if (route.endsWith("/likedIDs")) {
             value = QJsonArray{"1", "missing", "2"};
         } else if (route.endsWith("/userPlaylists")) {
+            if (rejectLibrary) {
+                return QJsonObject{{"body", QJsonObject{{"code", 502}, {"message", "本地模拟读取失败"}}}};
+            }
             auto owned = MusicData::item("playlist", "8", "本人歌单");
             owned["creatorID"] = "42";
             const auto collected = MusicData::item("playlist", "9", "收藏歌单");
@@ -185,6 +240,16 @@ bool runNativeMusicChecks(const QString &root) {
     check(library.directory->cursor == 4 && library.directory->songs.size() == 3 &&
               library.current["id"] == "3",
           "sparse IDs consumed once and later selection restored");
+    int returnSelections = 0;
+    const auto returnConnection = QObject::connect(&library, &MusicLibrary::selectionRequested, &library,
+                                                   [&](int, QJsonObject) { ++returnSelections; });
+    const auto returningSong = library.current;
+    const auto returningPhysical = library.selectedPhysical;
+    library.returnToDirectory();
+    check(returnSelections == 0 && library.current == returningSong &&
+              library.selectedPhysical == returningPhysical && library.frame["mode"] == "archive",
+          "song return does not reselect a canonical slot or reload identity");
+    QObject::disconnect(returnConnection);
     const auto queue = library.directoryQueue();
     check(queue.size() == 4 && queue.at(1).toObject()["deferred"].toBool(), "queue preserves unloaded IDs");
     library.leaveDirectory();
@@ -220,6 +285,7 @@ bool runNativeMusicChecks(const QString &root) {
     library.player.play(song("1"), QJsonArray{song("1"), song("2")});
     check(waitFor([&] { return !library.player.loading; }), "native playback source finishes");
     check(!library.player.failed && library.player.queue.size() == 2, "native playback prepares the queue");
+    check(library.player.actualQuality == "sq", "player retains actual resolved quality");
     check(waitFor([&] { return library.player.lyrics.status == "ready"; }), "native lyrics finish");
     library.player.lyrics.sync(1500);
     check(library.player.lyrics.index == 0, "lyrics locate the first line");
@@ -227,11 +293,52 @@ bool runNativeMusicChecks(const QString &root) {
     check(library.player.lyrics.index == 1, "lyrics offset updates the shared index");
     library.player.lyrics.sync(0);
     check(library.player.lyrics.index == 0, "backward seeking updates lyrics");
+    host.mediaControl("pause");
+    library.player.tick(100, true);
+    const auto queueBeforeQuality = library.player.queue;
+    const auto lyricsBeforeQuality = library.player.lyrics.document();
+    returnedQuality = "standard";
+    library.player.setQuality("standard");
+    check(library.player.loading && library.player.actualQuality.isEmpty(),
+          "quality switch clears old badge");
+    check(waitFor([&] { return !library.player.loading; }), "quality switch resolves its source");
+    check(!host.mediaState().value("playing").toBool() && library.player.queue == queueBeforeQuality &&
+              library.player.lyrics.document() == lyricsBeforeQuality,
+          "quality switch preserves pause, queue and lyrics");
+    library.player.setQuality("hires");
+    library.player.setQuality("lossless");
+    check(waitFor([&] {
+              library.player.tick(102, true);
+              return !library.player.loading && library.player.actualQuality == "standard";
+          }) &&
+              library.player.quality == "lossless",
+          "rapid switches keep latest preference and actual downgrade");
+    library.player.setQuality("invalid-quality");
+    check(library.player.quality == "lossless", "unknown quality is rejected");
     library.player.next();
+    check(library.player.actualQuality.isEmpty(), "new request clears the previous quality immediately");
     check(waitFor([&] { return !library.player.loading; }) && library.player.current["id"] == "2",
           "next song uses the native queue");
+    // 无输出设备时播放器会延后打开音源；真实解码错误只在设备可用时验证。
+    if (!QMediaDevices::defaultAudioOutput().isNull()) {
+        QFile invalidAudio(audioFixture.filePath("invalid-audio.bin"));
+        check(invalidAudio.open(QIODevice::WriteOnly), "invalid audio fixture opens");
+        invalidAudio.write("invalid audio fixture");
+        invalidAudio.close();
+        check(host.mediaLoad(QUrl::fromLocalFile(invalidAudio.fileName()).toString()),
+              "decoder accepts the local source before inspecting its content");
+        check(waitFor([&] {
+                  library.player.tick(103, true);
+                  return library.player.failed;
+              }),
+              "actual decoder failure reaches the player");
+        check(library.player.actualQuality.isEmpty(), "decoder failure clears the previous actual quality");
+    } else {
+        qInfo() << "无音频输出设备，跳过真实解码失败检查";
+    }
     library.player.stop();
-    check(library.player.current.isEmpty() && library.player.lyrics.document().isEmpty(),
+    check(library.player.current.isEmpty() && library.player.lyrics.document().isEmpty() &&
+              library.player.actualQuality.isEmpty(),
           "stop clears player and lyrics");
 
     library.discover->load("playlists");
@@ -250,9 +357,81 @@ bool runNativeMusicChecks(const QString &root) {
     library.switchProvider("qq");
     check(library.provider == "qq" && library.player.queue.isEmpty() && library.directory == nullptr,
           "provider switch clears old native state");
+    library.uid = "42";
+    auto qqSong = song("songMID");
+    qqSong["provider"] = "qq";
+    qqSong["key"] = "qq:song:songMID";
+    const auto qqBefore = mutations;
+    library.like(qqSong);
+    check(waitFor([&] { return !library.writeLoading; }), "QQ verified like completes");
+    check(MusicData::indexOfId(library.lists[1], "songMID") >= 0 && mutations == qqBefore + 1,
+          "QQ like accepts server result without fetching unsupported likedIDs");
+    rejectQQWrite = true;
+    library.like(qqSong);
+    check(waitFor([&] { return !library.writeLoading; }), "QQ uncertain write completes once");
+    check(MusicData::indexOfId(library.lists[1], "songMID") >= 0 && mutations == qqBefore + 2,
+          "QQ uncertain write does not retry or change local heart");
+    library.capabilities = {{"mutations", QJsonObject{{"likeSong", false}}}};
+    library.like(qqSong);
+    check(mutations == qqBefore + 2 && !library.writeLoading, "QQ closed capability blocks mutation");
+    library.capabilities = {};
+    auto ordinary = MusicData::item("playlist", "70001", "QQ 自建", "", "qq");
+    ordinary["creatorID"] = "42";
+    ordinary["owned"] = true;
+    ordinary["dirId"] = "1";
+    check(library.canEditPlaylist(ordinary), "QQ ordinary owned playlist editable");
+    ordinary["dirId"] = "201";
+    check(!library.canEditPlaylist(ordinary), "QQ system liked directory is not ordinary playlist");
+    library.player.play(qqSong, std::nullopt, std::nullopt, true);
+    check(waitFor([&] { return !library.player.loading; }) && library.player.trial,
+          "QQ explicit preview is marked as trial");
+    library.player.stop();
     library.switchProvider("kugou", "lite");
     check(library.kugouEdition == "lite" && library.accountKey() == "kugou-lite",
           "Kugou editions retain separate account keys");
+    // 恢复与串行加载流程
+    for (const auto &provider : {QString("netease"), QString("qq"), QString("kugou")}) {
+        library.switchProvider(provider);
+        host.cookies["MUSIC_U"] = "fixture-loading";
+        host.cookies["qqmusic_session"] = "fixture-loading";
+        host.cookies["__kugou"] =
+            QJsonObject{{library.kugouEdition, QJsonObject{{"token", "fixture-loading"}, {"userid", "42"}}}};
+        library.restoreAccount();
+        library.showSource(2);
+        library.showSource(3);
+        check(library.restoringAccount && library.sourceMessage(3).contains("正在恢复"),
+              "shared restore hint appears before account response");
+        check(waitFor([&] { return !library.sourceLoading(); }) && !library.lists[3].isEmpty(),
+              "last requested collection loads after account restoration");
+        library.lists[1] = {};
+        library.hasMore[1] = true;
+        library.loadMoreSource(1);
+        library.lists[2] = {};
+        library.lists[3] = {};
+        library.hasMore[2] = true;
+        library.hasMore[3] = true;
+        library.loadMoreSource(3);
+        check(library.sourceMessage(3).contains("正在读取"), "shared collection waiting hint");
+        check(waitFor([&] { return !library.sourceLoading(); }) && !library.lists[3].isEmpty(),
+              "collection switch during a serial request is not dropped");
+        library.lists[3] = {};
+        library.hasMore[3] = true;
+        host.invalidateMetadata();
+        rejectLibrary = true;
+        library.loadMoreSource(3);
+        check(waitFor([&] { return !library.sourceLoading(); }) && library.sourceMessage(3).contains("重试"),
+              "failure replaces loading with a retry hint");
+        rejectLibrary = false;
+        host.invalidateMetadata();
+        library.loadMoreSource(3);
+        check(waitFor([&] { return !library.sourceLoading(); }) && !library.lists[3].isEmpty(),
+              "explicit retry recovers the collection");
+        library.restoreAccount();
+        library.logout();
+        check(waitFor([&] { return !library.sourceLoading(); }) && library.uid.isEmpty() &&
+                  library.sourceMessage(3).contains("登录后"),
+              "logout clears restore state and isolates its old callback");
+    }
     check(nativeSearches > 0 && details > 0 && mutations >= 2,
           "native business exercises the real callback boundary");
     host.shutdown();

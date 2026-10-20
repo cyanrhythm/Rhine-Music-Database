@@ -9,12 +9,13 @@ void NativeHud::libraryPanel(double x, double y, double width) {
     if (modal == "saved" && music.editable()) {
         button("＋ 创建歌单", x + width - 220, y + 147, 167, 33, "music:create-playlist", 12);
     }
+    if (modal == "saved" && music.provider == "qq") {
+        button("刷新个人库", x + width - 340, y + 147, 110, 33, "music:refresh-personal", 12);
+    }
     rule(x + 53, y + 248, width - 106);
     QStringList filters{"歌曲", "专辑", "歌单", "歌手"};
     if (modal == "saved") {
         filters = music.columns.mid(1, music.provider == "kugou" ? 3 : 4);
-    } else if (music.provider == "qq") {
-        filters = {"歌曲"};
     }
     const auto selected = modal == "saved"
                               ? musicCollection - 1
@@ -75,6 +76,9 @@ void NativeHud::libraryPanel(double x, double y, double width) {
         if (artist.isEmpty()) {
             artist = entry.value["album"].toString();
         }
+        if (entry.value.contains("playCount")) {
+            artist += " / " + QString::number(entry.value["playCount"].toDouble(), 'f', 0) + " 次播放";
+        }
         limited((kind == "group" ? "GROUP" : kind.toUpper()) + " / " + artist, x + 160, yy + 30, 11,
                 width - 350);
         text("查看 ↗", x + width - 136, yy + 8, 12);
@@ -89,14 +93,8 @@ void NativeHud::libraryPanel(double x, double y, double width) {
         restore();
     }
     if (values.isEmpty()) {
-        auto message = music.status;
-        if (music.sourceLoading()) {
-            message = "正在读取音乐…";
-        } else if (lane > 0 && music.uid.isEmpty()) {
-            message = "登录后查看个人音乐";
-        }
-        limited(message, x + 53, y + 501, 22, width - 106);
-        if (lane > 0 && music.uid.isEmpty()) {
+        limited(music.sourceMessage(lane), x + 53, y + 501, 22, width - 106);
+        if (lane > 0 && music.uid.isEmpty() && !music.restoringAccount) {
             button("登录" + music.providerName() + " →", x + 53, y + 561, 300, 40, "music:login", 16);
         }
     }
@@ -121,11 +119,15 @@ void NativeHud::discoverPanel(double x, double y, double width) {
     const auto &discover = *music.discover;
     const auto left = x + 53;
     const auto usable = width - 106;
-    QVector<QPair<QString, QString>> tabs{{"playlists", music.provider == "qq" ? "榜单列表" : "推荐歌单"},
-                                          {"daily", music.provider == "qq" ? "首页推荐" : "每日推荐"},
+    QVector<QPair<QString, QString>> tabs{{"playlists", "推荐歌单"},
+                                          {"daily", music.provider == "qq" ? "每日 30 首" : "每日推荐"},
                                           {"charts", "排行榜"},
                                           {"albums", "新专辑"},
                                           {"categories", "分类歌单"}};
+    if (music.provider == "qq") {
+        tabs.insert(2, {"guess", "猜你喜欢"});
+        tabs.insert(3, {"new-songs", "新歌速递"});
+    }
     if (music.provider == "netease") {
         tabs.append(QPair<QString, QString>{"artists", "收藏歌手"});
     }
@@ -139,7 +141,10 @@ void NativeHud::discoverPanel(double x, double y, double width) {
         }
     }
     if (discover.tab == "categories") {
-        QJsonArray categories{QJsonObject{{"id", "全部"}, {"name", "全部"}}};
+        QJsonArray categories;
+        if (music.provider != "qq" || discover.categories.isEmpty()) {
+            categories.append(QJsonObject{{"id", "全部"}, {"name", "全部"}});
+        }
         for (const auto &category : discover.categories) {
             categories.append(category);
         }
@@ -154,6 +159,23 @@ void NativeHud::discoverPanel(double x, double y, double width) {
         const auto current = selected < 0 ? QJsonObject() : categories.at(selected).toObject();
         button("分类：" + current["name"].toString("全部") + " →", left, y + 244, usable, 33,
                "discover:category:" + QString::fromUtf8(QUrl::toPercentEncoding(next["id"].toString())), 12);
+    }
+    if (discover.tab == "guess") {
+        button("换一批推荐", left, y + 244, 170, 33, "discover:tab:guess", 12);
+    }
+    if (discover.tab == "new-songs" && !discover.newSongAreas.isEmpty()) {
+        int selected = 0;
+        for (int index = 0; index < discover.newSongAreas.size(); ++index) {
+            if (QString::number(discover.newSongAreas[index].toObject()["id"].toInt()) ==
+                discover.newSongArea) {
+                selected = index;
+                break;
+            }
+        }
+        const auto next = discover.newSongAreas[(selected + 1) % discover.newSongAreas.size()].toObject();
+        const auto current = discover.newSongAreas[selected].toObject();
+        button("地区：" + current["name"].toString() + " →", left, y + 244, usable, 33,
+               "discover:area:" + QString::number(next["id"].toInt()), 12);
     }
     rule(left, y + 286, usable, 0.5);
     listOffset = std::min(listOffset, std::max(0, int(discover.items.size()) - 6));

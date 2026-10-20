@@ -43,7 +43,11 @@ MusicLibrary::MusicLibrary(Host *host, const QJsonObject &content, QObject *pare
         }
     }
     discover = std::make_unique<MusicDiscover>(this);
-    connect(&player, &MusicPlayer::changed, this, &MusicLibrary::changed);
+    // 播放进度与歌词通知只刷新可见播放界面，不作废资源库场景。
+    connect(&player, &MusicPlayer::changed, this, [this] {
+        ++revision;
+        emit playbackInvalidated();
+    });
     connect(&player, &MusicPlayer::trackSelected, this, &MusicLibrary::followPlayback);
 }
 
@@ -63,6 +67,35 @@ QString MusicLibrary::providerName() const {
         return QStringLiteral("酷狗概念版");
     }
     return MusicApi::providerName(provider);
+}
+
+/** 统一各渠道的账号恢复、栏目等待、失败和空库文案，供场景与列表共用。 */
+QString MusicLibrary::sourceMessage(int lane) const {
+    if (lane < 0 || lane >= 5) {
+        return {};
+    }
+    if (lane == 0) {
+        return searchLoading ? QStringLiteral("正在检索音乐，请稍候…") : status;
+    }
+    if (provider == "kugou" && lane == 4) {
+        return QStringLiteral("此渠道暂不支持收藏专辑");
+    }
+    if (restoringAccount) {
+        return QStringLiteral("正在恢复") + providerName() + QStringLiteral("登录，请稍候…");
+    }
+    if (!m_accountError.isEmpty()) {
+        return m_accountError;
+    }
+    if (uid.isEmpty()) {
+        return QStringLiteral("登录后查看个人音乐");
+    }
+    if (personalLoading) {
+        return QStringLiteral("正在读取") + columns[lane] + QStringLiteral("，请稍候…");
+    }
+    if (!m_sourceErrors[lane].isEmpty()) {
+        return m_sourceErrors[lane] + QStringLiteral("，可点击加载更多重试");
+    }
+    return QStringLiteral("暂无") + columns[lane];
 }
 
 QString MusicLibrary::accountKey() const {
@@ -163,6 +196,9 @@ void MusicLibrary::observe(int selected) {
     rowMemory[lane] = row;
     const auto values = sourceItems(lane);
     choose(values.isEmpty() ? QJsonObject{} : values.at(wrap(offsets[lane] + row, values.size())).toObject());
+    if (lane > 0 && values.isEmpty()) {
+        loadMoreSource(lane);
+    }
 }
 
 /** 先发布当前选择，再延迟补齐详情；任何旧详情、封面或百科都由选择代数隔离。 */
@@ -188,6 +224,7 @@ void MusicLibrary::choose(QJsonObject input, bool containerDetails, std::optiona
     }
     current = details.value(input["key"].toString(), input);
     loadCover(current);
+    loadSubscriptionStatus(current);
     detailLoading = true;
     if (input["kind"] != "song" && !containerDetails) {
         detailLoading = false;
@@ -309,10 +346,11 @@ void MusicLibrary::search(QString text, QString kind, bool more) {
         (!lists[0].isEmpty() || searchLoading)) {
         return;
     }
-    if (query.isEmpty() || query.toUcs4().size() > 100) {
+    const auto maximum = provider == "qq" ? 60 : 100;
+    if (query.isEmpty() || query.toUcs4().size() > maximum) {
         ++m_generation;
         searchLoading = false;
-        status = QStringLiteral("请输入 1–100 字关键词");
+        status = QStringLiteral("请输入 1–") + QString::number(maximum) + QStringLiteral(" 字关键词");
         changed();
         return;
     }
@@ -428,13 +466,41 @@ void MusicLibrary::showSource(int lane) {
     emit selectionRequested(physical, {});
     observe(physical);
     if (lane > 0) {
-        if (uid.isEmpty()) {
+        if (restoringAccount) {
+            loadMoreSource(lane);
+        } else if (uid.isEmpty()) {
             status = QStringLiteral("登录后查看") + columns[lane];
         } else if (lists[lane].isEmpty()) {
             loadMoreSource(lane);
         }
     }
     changed();
+}
+
+/** 串行读回当前 QQ 个人库，清理旧缓存与分页游标。 */
+void MusicLibrary::refreshPersonal(int lane) {
+    if (provider != "qq" || uid.isEmpty() || lane < 1 || lane > 4 || personalLoading || writeLoading ||
+        accountLoading) {
+        return;
+    }
+    host->invalidateMetadata();
+    const auto reset = [this](int source) {
+        lists[source] = {};
+        totals[source] = 0;
+        hasMore[source] = true;
+    };
+    reset(lane);
+    if (lane == 1) {
+        likedCursor = 0;
+        likedIDs.reset();
+    } else if (lane == 4) {
+        albumCursor = 0;
+    } else {
+        reset(2);
+        reset(3);
+        playlistCursor = 0;
+    }
+    loadMoreSource(lane);
 }
 
 void MusicLibrary::selectResult(int index, int lane, bool open) {
@@ -489,12 +555,25 @@ void MusicLibrary::next(int direction) {
     changed();
 }
 
-void MusicLibrary::completePersonal(int lane) {
+/** 收束串行个人库请求，并接续等待期间用户最后选择的栏目，失败不自动重试。 */
+void MusicLibrary::completePersonal(int lane, QString error) {
     personalLoading = false;
-    status = QStringLiteral("已读取个人音乐");
-    if (selectedLane == lane && current.isEmpty()) {
+    m_sourceErrors[lane] = error;
+    if (lane == 2 || lane == 3) {
+        m_sourceErrors[2] = error;
+        m_sourceErrors[3] = error;
+    }
+    status = error.isEmpty() ? QStringLiteral("已读取个人音乐") : error;
+    const auto selectedPlaylists = (lane == 2 || lane == 3) && (selectedLane == 2 || selectedLane == 3);
+    if (error.isEmpty() && (selectedLane == lane || selectedPlaylists) && current.isEmpty()) {
         selectedPhysical = -1;
-        observe(frame["selected"].toInt(physicalSlots[lane].value(0, -1)));
+        observe(frame["selected"].toInt(physicalSlots[selectedLane].value(0, -1)));
+    }
+    const auto pending = m_pendingLane;
+    m_pendingLane = -1;
+    const auto samePlaylists = (lane == 2 || lane == 3) && (pending == 2 || pending == 3);
+    if (pending > 0 && pending != lane && !samePlaylists && lists[pending].isEmpty()) {
+        loadMoreSource(pending);
     }
     changed();
 }
@@ -510,9 +589,7 @@ void MusicLibrary::loadLikedIDs(int lane, quint64 token, QString user) {
                     return;
                 }
                 if (!result.ok()) {
-                    personalLoading = false;
-                    status = result.error;
-                    changed();
+                    completePersonal(lane, result.error);
                     return;
                 }
                 likedIDs = ids;
@@ -529,11 +606,9 @@ void MusicLibrary::loadLikedIDs(int lane, quint64 token, QString user) {
     } else {
         api.call(
             "likedIDs", {user},
-            [this, fetch](MusicReply result) {
+            [this, lane, fetch](MusicReply result) {
                 if (!result.ok()) {
-                    personalLoading = false;
-                    status = result.error;
-                    changed();
+                    completePersonal(lane, result.error);
                     return;
                 }
                 fetch(result.value.toArray());
@@ -552,11 +627,21 @@ void MusicLibrary::loadMoreSource(int lane) {
         changed();
         return;
     }
-    if (personalLoading || !hasMore[lane]) {
+    if (lane > 0 && (restoringAccount || personalLoading)) {
+        m_pendingLane = lane;
+        changed();
+        return;
+    }
+    if (!hasMore[lane]) {
         return;
     }
     if (lane == 0) {
         search(keyword, {}, true);
+        return;
+    }
+    if (!m_accountError.isEmpty() && host->authenticated()) {
+        m_pendingLane = lane;
+        restoreAccount();
         return;
     }
     if (uid.isEmpty()) {
@@ -565,6 +650,7 @@ void MusicLibrary::loadMoreSource(int lane) {
         return;
     }
     personalLoading = true;
+    m_sourceErrors[lane].clear();
     const auto token = m_accountGeneration;
     const auto user = uid;
     changed();
@@ -591,9 +677,7 @@ void MusicLibrary::loadMoreSource(int lane) {
                 return;
             }
             if (!result.ok()) {
-                personalLoading = false;
-                status = result.error;
-                changed();
+                completePersonal(lane, result.error);
                 return;
             }
             const auto page = result.value.toObject();
@@ -632,6 +716,10 @@ void MusicLibrary::loadMoreSource(int lane) {
                 }
             }
             completePersonal(lane);
+            if (page["incomplete"].toBool()) {
+                status = QStringLiteral("已读取部分歌单，上游未提供可靠的后续页，请稍后刷新");
+                changed();
+            }
         },
         valid(token, &m_accountGeneration));
 }

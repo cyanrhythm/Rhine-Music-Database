@@ -7,13 +7,22 @@ const allowed = new Set([
     '/login/qr/check',
     '/login/qr/cancel',
     '/login/status',
+    '/login/channels',
     '/logout',
     '/user/detail',
     '/user/playlist',
     '/user/albums',
     '/user/liked-songs',
     '/user/playlist-detail',
-    '/getSearchByKey',
+    '/user/vip',
+    '/user/subscription-status',
+    '/user/daily-songs',
+    '/user/guess-you-like',
+    '/recommend/playlists',
+    '/recommend/categories',
+    '/recommend/category-playlists',
+    '/recommend/new-songs',
+    '/search',
     '/getSmartbox',
     '/getSongInfo',
     '/getSongListDetail',
@@ -29,14 +38,35 @@ const allowed = new Set([
     '/getMusicPlay',
     '/getLyric',
 ]);
+const writes = new Set([
+    '/user/song/like',
+    '/user/album/subscribe',
+    '/user/playlist/subscribe',
+    '/user/playlist/tracks',
+    '/user/playlist/create',
+    '/user/playlist/rename',
+    '/user/playlist/delete',
+]);
 let ready;
 let server;
 let sessions = [];
+function failureMessage(status, body, write) {
+    if (status === 401) {
+        return 'QQ 登录已失效，请重新登录';
+    }
+    if (body.errorKey === 'search.rejected') {
+        return 'QQ 拒绝了本次搜索，请登录后重试';
+    }
+    if (write) {
+        return 'QQ 写入未确认，请先刷新列表核实结果，不要重复提交';
+    }
+    return 'QQ 音乐暂不可用，请稍后重试';
+}
 // 只透传固定枚举及数字码，未知字段与原始异常始终留在私有服务内部。
 function safeQrDiagnostics(body, includePrevious = true) {
     const result = {};
-    for (const name of ['failureStage', 'failureReason']) {
-        if (typeof body?.[name] === 'string' && /^[a-z-]{1,64}$/.test(body[name])) {
+    for (const name of ['failureStage', 'failureReason', 'errorKey', 'upstreamErrorKey']) {
+        if (typeof body?.[name] === 'string' && /^[a-z.-]{1,80}$/.test(body[name])) {
             result[name] = body[name];
         }
     }
@@ -47,6 +77,17 @@ function safeQrDiagnostics(body, includePrevious = true) {
     }
     if (includePrevious && body?.lastFailure) {
         result.lastFailure = safeQrDiagnostics(body.lastFailure, false);
+    }
+    if (includePrevious && body?.primaryFailure) {
+        result.primaryFailure = safeQrDiagnostics(body.primaryFailure, false);
+    }
+    for (const name of ['retryable', 'writeAttempted']) {
+        if (typeof body?.[name] === 'boolean') {
+            result[name] = body[name];
+        }
+    }
+    if (body?.verification === 'unconfirmed') {
+        result.verification = 'unconfirmed';
     }
     return result;
 }
@@ -186,7 +227,8 @@ async function start(cookies) {
  */
 async function dispatch(message) {
     const route = message.route.slice(3);
-    if (!allowed.has(route)) {
+    const write = writes.has(route);
+    if (!allowed.has(route) && !write) {
         throw new Error('Unsupported QQ route');
     }
     ready ||= start(message.cookies || {}).catch((error) => {
@@ -198,18 +240,49 @@ async function dispatch(message) {
         return charts(route, message.params || {});
     }
     const url = new URL(`http://127.0.0.1:${port}${route}`);
-    for (const [key, value] of Object.entries(message.params || {})) {
-        url.searchParams.set(key, String(value));
+    if (!write) {
+        for (const [key, value] of Object.entries(message.params || {})) {
+            url.searchParams.set(key, String(value));
+        }
     }
     const response = await fetch(url, {
+        method: write ? 'POST' : 'GET',
         headers: {
             'x-rhine-bridge': secret,
             'x-qq-session': message.cookies?.qqmusic_session || '',
+            ...(write ? { 'content-type': 'application/json' } : {}),
         },
+        ...(write ? { body: JSON.stringify(message.params || {}) } : {}),
         signal: AbortSignal.timeout(24000),
         redirect: 'error',
+    }).catch((error) => {
+        if (!write) {
+            throw error;
+        }
+        const failure = new Error('QQ 写入结果未确认，请刷新个人库核实，不要重复提交');
+        failure.body = {
+            code: 502,
+            message: failure.message,
+            retryable: false,
+            writeAttempted: true,
+            verification: 'unconfirmed',
+        };
+        throw failure;
     });
-    const body = await response.json();
+    const body = await response.json().catch((error) => {
+        if (!write) {
+            throw error;
+        }
+        const failure = new Error('QQ 写入响应无法确认，请刷新个人库核实，不要重复提交');
+        failure.body = {
+            code: 502,
+            message: failure.message,
+            retryable: false,
+            writeAttempted: true,
+            verification: 'unconfirmed',
+        };
+        throw failure;
+    });
     const cookies = response.headers.getSetCookie();
     if (typeof body.cookie === 'string') {
         cookies.push(body.cookie);
@@ -220,8 +293,7 @@ async function dispatch(message) {
         return {
             body: {
                 code: response.status,
-                message:
-                    response.status === 401 ? 'QQ 登录已失效，请重新登录' : 'QQ 音乐暂不可用，请稍后重试',
+                message: failureMessage(response.status, body, write),
                 retryAfterMs: body.retryAfterMs ?? Number(response.headers.get('Retry-After') || 0) * 1000,
                 ...safeQrDiagnostics(body),
             },

@@ -58,6 +58,9 @@ class Engine : public QObject {
     SceneDrawBuffers drawBuffers() const {
         return scene.drawBuffers;
     }
+    quint64 geometryRevision() const {
+        return m_geometryRevision;
+    }
     struct MusicTexture {
         QJsonObject item;
         QImage cover;
@@ -70,16 +73,24 @@ class Engine : public QObject {
     void recordResourceRelease() {
         m_gpuResources.store(0, std::memory_order_relaxed);
         m_musicTextureBytes.store(0, std::memory_order_relaxed);
+        recordOpticalRelease();
+    }
+    // 两个独立渲染器可以同时保留资源；增强实例销毁时只清理它自己的诊断计数。
+    void recordOpticalRelease() {
+        m_opticalGpuResources.store(0, std::memory_order_relaxed);
+        m_opticalTextureBytes.store(0, std::memory_order_relaxed);
     }
     Q_INVOKABLE void setVisible(bool value);
     void wake(bool input = true);
     void start();
     void recordRender(quint64 resources, quint64 bindings = 0, quint64 textureBytes = 0,
-                      quint64 coverUploads = 0, quint64 drawCalls = 0) {
+                      quint64 coverUploads = 0, quint64 drawCalls = 0, bool optical = false) {
         m_renderFrames.fetch_add(1, std::memory_order_relaxed);
-        m_gpuResources.store(resources, std::memory_order_relaxed);
+        auto &resourceCounter = optical ? m_opticalGpuResources : m_gpuResources;
+        resourceCounter.store(resources, std::memory_order_relaxed);
         m_bindingCreations.fetch_add(bindings, std::memory_order_relaxed);
-        m_musicTextureBytes.store(textureBytes, std::memory_order_relaxed);
+        auto &textureCounter = optical ? m_opticalTextureBytes : m_musicTextureBytes;
+        textureCounter.store(textureBytes, std::memory_order_relaxed);
         m_coverUploads.fetch_add(coverUploads, std::memory_order_relaxed);
         m_lastDrawCalls.store(drawCalls, std::memory_order_relaxed);
     }
@@ -93,18 +104,27 @@ class Engine : public QObject {
   signals:
     void updated();
     void sceneUpdated();
+    void opticalSceneUpdated();
     void hudUpdated();
     void stateChanged();
     void hitsChanged();
     void clearCredentials();
+    void performanceRequested();
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
   private:
+    void notifySceneRenderers(bool visualChanged);
+    bool m_sceneEnhancement = false;
+    bool m_originalSceneDirty = false;
+    bool m_originalSceneWarm = false;
+    quint64 m_geometryRevision = 0;
     std::atomic<quint64> m_renderFrames{0}, m_gpuResources{0};
     std::atomic<quint64> m_bindingCreations{0};
     std::atomic<quint64> m_musicTextureBytes{0};
+    std::atomic<quint64> m_opticalGpuResources{0};
+    std::atomic<quint64> m_opticalTextureBytes{0};
     std::atomic<quint64> m_coverUploads{0};
     std::atomic<quint64> m_lastDrawCalls{0};
     MusicTextures m_musicTextures;
@@ -126,6 +146,10 @@ class Engine : public QObject {
     double m_wheelDistance = 0;
     qint64 m_lastTick = 0, m_lastInput = 0;
     double m_animationTime = 0;
+    double m_discAngle = 0;
+    double m_discTime = 0;
+    bool m_discRotating = false;
+    QString m_discIdentity;
     quint64 m_steps = 0, m_sceneUpdates = 0, m_hudUpdates = 0;
     int m_stableFrames = 0;
     QJsonObject m_sceneSignature;
@@ -133,6 +157,7 @@ class Engine : public QObject {
     void tick();
     void flushPointer();
     void pollMedia();
+    void refreshPlayback();
     QElapsedTimer clock;
     double m_width = 1280;
     double m_height = 720;

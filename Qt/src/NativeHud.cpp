@@ -147,6 +147,14 @@ NativeHud::Layout NativeHud::containerLayout(double width) const {
     layout.width = width - layout.x - 40;
     return layout;
 }
+QRectF NativeHud::detailBounds(double width) const {
+    if (m_music->current["kind"] == "song") {
+        const auto left = width * 0.56 - 24;
+        return {left, 260, width - left - 35, 696};
+    }
+    const auto layout = containerLayout(width);
+    return {layout.left, layout.top, width - layout.left * 2, layout.bottom - layout.top};
+}
 QJsonObject NativeHud::state() const {
     const auto bounds = modalBounds(width);
     const auto rect = [](const std::optional<QRectF> &value) -> QJsonValue {
@@ -171,6 +179,8 @@ QJsonObject NativeHud::state() const {
             {"modalOffset", motion.offset},
             {"dark", dark},
             {"reduced", reduced},
+            {"sceneEnhancement", sceneEnhancement},
+            {"trackListMode", trackListMode},
             {"mode", frame["mode"]},
             {"viewer", frame["viewer"]},
             {"status", m_music->status}};
@@ -189,6 +199,11 @@ void NativeHud::draw(QJsonObject next, double stageWidth, double time) {
     hits = {};
     playerSeekRect.reset();
     playerVolumeRect.reset();
+    if (!trackListMode || frame["mode"] != "archive" || frame["viewer"].toBool() ||
+        m_music->current["kind"] != "song") {
+        m_trackListCurve.reset();
+        m_trackListScope.clear();
+    }
     motion.sample(time);
     if (closing && motion.finished()) {
         modal.clear();
@@ -236,7 +251,7 @@ void NativeHud::navigation(double width) {
     control("发现音乐 ↗", x - 210, 118, 184, "discover");
     control("音乐检索  /", x, 118, 184, "search");
     control("＋ 我的音乐", x + 200, 118, 184, "saved");
-    control("设置", x + 400, 118, 120, "settings");
+    control(m_host->updater.available() ? "设置 · 更新" : "设置", x + 400, 118, 120, "settings");
 }
 void NativeHud::footer(double width) {
     fill(59, 971, 5, 5, {119.0 / 255, 123.0 / 255, 96.0 / 255, 1});
@@ -266,48 +281,67 @@ void NativeHud::empty(double width) {
     QString action = "search";
     if (music.directory) {
         title = music.libraryName();
-        label = "查看音乐详情 →";
+        label = "查看歌单详情 →";
         action = "music:directory-info";
     } else if (music.selectedLane > 0) {
-        if (music.uid.isEmpty()) {
+        title = music.sourceLoading() ? QStringLiteral("正在同步音乐资料…") : music.libraryName();
+        label = "查看我的音乐 →";
+        action = "saved";
+        if (music.uid.isEmpty() && !music.restoringAccount) {
             title = "登录后查看";
+            label = "登录" + music.providerName() + " →";
+            action = "music:login";
         }
-        label = "登录" + music.providerName() + " →";
-        action = "music:login";
     }
     limited(title, x, 509, 28, width - x - 59, "bold");
     rule(x, 601, width - x - 59);
-    limited(music.status, x, 624, 16, width - x - 117);
+    limited(music.directory ? music.status : music.sourceMessage(music.selectedLane), x, 624, 16,
+            width - x - 117);
     button(label, x, 703, 300, 32, action, 14);
 }
 void NativeHud::archive(double width) {
     auto &music = *m_music;
     const auto item = music.current;
-    if (!item.isEmpty()) {
+    if (!item.isEmpty() && !item["id"].toString().isEmpty()) {
         const auto x = width * 0.50520833;
         if (music.directory) {
             control("← 返回上一级", 59, 211, 280, "music:parent");
-            control("查看音乐详情 ↗", 59, 347, 310, "music:directory-info");
+            const auto kind = music.directory->item["kind"].toString();
+            QString label = "查看歌单详情 ↗";
+            if (kind == "album") {
+                label = "查看专辑详情 ↗";
+            } else if (kind == "artist") {
+                label = "查看歌手详情 ↗";
+            }
+            control(label, 59, 265, 310, "music:directory-info");
         }
-        roll("music-source", "MUSIC DATABASE / " + music.libraryName(), x, 471, 12, width - x - 59);
-        roll("music-title", item["title"].toString(), x, 509, 28, width - x - 59, "bold");
-        hit(x, 509, 414, 37, "open", item["title"].toString());
-        rule(x, 601, width - x - 59);
-        fill(x - 12, 598, 6, 6);
-        const auto kind = item["kind"].toString();
-        roll("music-id", kind.toUpper() + " ID: " + item["id"].toString() + " / " + item["artist"].toString(),
-             x, 624, 16, width - x - 210);
-        text(kind.toUpper(), width - 170, 627, 11);
-        QString label = "打开歌单资料库 →";
-        if (kind == "song") {
-            label = "查看歌曲详情 →";
-        } else if (kind == "album") {
-            label = "打开专辑资料库 →";
-        } else if (kind == "artist") {
-            label = "浏览歌手作品 →";
+        const bool showTrackList = trackListMode && item["kind"] == "song";
+        if (!showTrackList) {
+            roll("music-source", "MUSIC DATABASE / " + music.libraryName(), x, 471, 12, width - x - 59);
         }
-        control(label, x, 703, 300, "open");
-        aligned("点击打开 · ENTER 键也可打开", x, 771, 14);
+        if (showTrackList) {
+            archiveTrackList(x, width);
+        } else {
+            roll("music-title", item["title"].toString(), x, 509, 28, width - x - 59, "bold");
+            hit(x, 509, 414, 37, "open", item["title"].toString());
+            rule(x, 601, width - x - 59);
+            fill(x - 12, 598, 6, 6);
+            const auto kind = item["kind"].toString();
+            roll("music-id",
+                 kind.toUpper() + " ID: " + item["id"].toString() + " / " + item["artist"].toString(), x, 624,
+                 16, width - x - 210);
+            text(kind.toUpper(), width - 170, 627, 11);
+            QString label = "打开歌单资料库 →";
+            if (kind == "song") {
+                label = "查看歌曲详情 →";
+            } else if (kind == "album") {
+                label = "打开专辑资料库 →";
+            } else if (kind == "artist") {
+                label = "浏览歌手作品 →";
+            }
+            control(label, x, 703, 300, "open");
+            aligned("点击打开 · ENTER 键也可打开", x, 771, 14);
+        }
         text("TRACK / SELECT", 60, 865, 11);
         rollingText("music-number", MusicData::pad(music.libraryIndex() + 1), 60, 901.2, 58, "regular", 0,
                     true);
@@ -342,10 +376,140 @@ void NativeHud::archive(double width) {
         const auto label = "TRACK COLUMN " + MusicData::pad(music.selectedLane + 1) + " / 05";
         text(label, col + 62 + (171 - m_glyphs->width(label, 15)) / 2, 916, 15);
     }
-    button("→", col + 233, 903, 46, 46, "column-next", 28);
+    button("→", col + 310, 903, 46, 46, "column-next", 28);
+    if (supportsTrackList()) {
+        archiveTabButton(width);
+    }
     text(music.directory ? "← → 浏览曲目列 / ↑ ↓ 选曲 / ENTER 查看 / ESC 上一级"
                          : "← → 切换来源 / ↑ ↓ 选曲 / ENTER 查看 / 检索",
          nav, 850, 12);
+}
+
+/** Tab 按钮 */
+void NativeHud::archiveTabButton(double width) {
+    const auto x = width - 340;
+    hit(x - 8, 854, 186, 48, "archive:tab-mode", "Tab Mode，按 Tab 切换");
+    text("Tab Mode", x, 866, 18, trackListMode ? "bold" : "regular");
+    const auto color = ink();
+    const auto keyX = x + 108;
+    const auto keycap = QString("M %1 864 L %2 864 L %2 888 L %1 888 Z").arg(keyX).arg(keyX + 34);
+    op({"path", keycap, 1, color});
+    const auto symbol = QString("M %1 876 L %2 876 M %3 871 L %2 876 L %3 881 M %4 870 L %4 882")
+                            .arg(keyX + 7)
+                            .arg(keyX + 23)
+                            .arg(keyX + 18)
+                            .arg(keyX + 27);
+    op({"path", symbol, 1.2, color});
+}
+
+/** 用连续曲目索引驱动整行位移；快速反向选曲接续当前的位置和速度。 */
+double NativeHud::archiveTrackPosition(int selected) {
+    const auto scope = m_music->provider + ":" + QString::number(quintptr(m_music->directory.get())) + ":" +
+                       (m_music->directory ? QString() : QString::number(m_music->selectedLane)) + ":" +
+                       m_music->groupName;
+    const bool sameCollection = scope == m_trackListScope;
+    auto position =
+        m_trackListCurve ? m_trackListCurve->sample(lastTime) : std::array<double, 2>{double(selected), 0};
+    if (reduced || !sameCollection || !m_trackListCurve || std::abs(selected - position[0]) > 8) {
+        m_trackListCurve = UiMotion::ReelCurve(selected, selected, 0, lastTime - 0.64, 0.64);
+        position = {double(selected), 0};
+    } else if (m_trackListTarget != selected) {
+        m_trackListCurve = UiMotion::ReelCurve(position[0], selected, position[1], lastTime, 0.64);
+    }
+    m_trackListScope = scope;
+    m_trackListTarget = selected;
+    return position[0];
+}
+
+/** 整首歌曲和对应刻度共用位移，不再使用逐字滚动；静止时保留原歌名字体和锚点。 */
+void NativeHud::archiveTrackList(double x, double width) {
+    const auto values = m_music->libraryItems();
+    const auto selected = m_music->libraryIndex();
+    if (selected < 0 || selected >= values.size()) {
+        return;
+    }
+    const auto position = archiveTrackPosition(selected);
+    constexpr double titleY = 509;
+    constexpr double titleSize = 28;
+    const auto bounds = m_glyphs->bounds("音乐", titleSize, "bold");
+    const auto centerY = titleY + bounds["y"].toDouble() + bounds["height"].toDouble() / 2;
+    // 标尺与指示使用固定锚点，长歌名只截断显示，不再推动标尺左右跳动。
+    const auto rulerX = width - 160;
+    const auto textWidth = std::max(1.0, rulerX - x - 68);
+    const auto gray = dark ? QJsonArray{0.61, 0.62, 0.59, 1} : QJsonArray{0.49, 0.49, 0.46, 1};
+    QVector<TrackRulerRow> rows;
+    const auto first = std::max(0, int(std::floor(position)) - 5);
+    const auto last = std::min(int(values.size()) - 1, int(std::ceil(position)) + 5);
+    save();
+    clip(x - 4, titleY - 290, width - x, 610);
+    for (int index = first; index <= last; ++index) {
+        const auto relative = index - position;
+        const auto distance = std::abs(relative);
+        const auto opacity = std::clamp(5 - distance, 0.0, 1.0);
+        if (opacity <= 0.001 || values.at(index).toObject()["kind"] != "song") {
+            continue;
+        }
+        // 第一段保留当前行两侧的大间隙，后续行按固定行距连续滑入和滑出。
+        const auto offset = distance <= 1 ? distance * 88 : 88 + (distance - 1) * 52;
+        const auto rowY = titleY + std::copysign(offset, relative);
+        const auto emphasis = std::max(0.0, 1 - distance);
+        auto color = ink();
+        if (emphasis < 0.9999) {
+            for (int channel = 0; channel < 3; ++channel) {
+                color[channel] =
+                    gray.at(channel).toDouble() * (1 - emphasis) + color.at(channel).toDouble() * emphasis;
+            }
+            color = QJsonArray{color.at(0), color.at(1), color.at(2), 1};
+        }
+        const auto name = index == selected ? m_music->current["title"].toString()
+                                            : values.at(index).toObject()["title"].toString();
+        const auto shown = fit(name, titleSize, textWidth, "bold");
+        const auto left = x - m_glyphs->inset(shown, titleSize, "bold");
+        const auto rowBounds = m_glyphs->bounds(shown, titleSize, "bold");
+        rows.append({rowY + rowBounds["y"].toDouble() + rowBounds["height"].toDouble() / 2,
+                     left + m_glyphs->width(shown, titleSize, "bold"), emphasis, opacity});
+        save();
+        alpha(opacity);
+        text(shown, left, rowY, titleSize, "bold", 0, color);
+        restore();
+        if (rowY >= titleY - 270 && rowY <= titleY + 270 && opacity > 0.5) {
+            hit(x, rowY - 4, textWidth, 44,
+                index == selected ? "open" : "music:index:" + QString::number(index), name);
+        }
+    }
+    archiveTrackRuler(rulerX, centerY, rows);
+    restore();
+}
+
+/** 刻度与歌曲继续同步滑动；鞍座和箭头始终固定在当前行锚点，不跟随切歌重复入场。 */
+void NativeHud::archiveTrackRuler(double x, double centerY, const QVector<TrackRulerRow> &rows) {
+    const auto color = dark ? QJsonArray{0.65, 0.67, 0.55, 0.8} : QJsonArray{0.46, 0.48, 0.37, 0.75};
+    fill(x, centerY - 272, 1.5, 544, color);
+    for (const auto &row : rows) {
+        save();
+        alpha(row.opacity);
+        const auto length = 14 + 36 * row.emphasis;
+        // 引导线和刻度以实际文字中心为准，动画中也不会与歌曲错行。
+        const auto leaderStart = std::min(x - length - 8, row.textRight + 20);
+        auto leader = color;
+        leader[3] = 0.12 + 0.16 * row.emphasis;
+        fill(leaderStart, row.centerY - 0.4, std::max(0.0, x - length - leaderStart), 0.8, leader);
+        fill(x - length, row.centerY - 0.6, length, 1.2, color);
+        restore();
+    }
+    const auto y = centerY;
+    const auto saddle = QString("M %1 %2 L %1 %3 Q %1 %4 %5 %4 Q %6 %4 %6 %3 L %6 %2")
+                            .arg(x - 6)
+                            .arg(y - 7)
+                            .arg(y + 4)
+                            .arg(y + 11)
+                            .arg(x + 2)
+                            .arg(x + 10);
+    op({"path", saddle, 2, color});
+    fill(x + 10, y - 1, 16, 2, color);
+    const auto arrow =
+        QString("M %1 %2 L %3 %4 L %3 %5 Z").arg(x + 18).arg(y).arg(x + 29).arg(y - 5).arg(y + 5);
+    op({"fill-path", arrow, color});
 }
 void NativeHud::actionButton(QString label, double x, double y, double width, QString action, bool primary) {
     auto color = ink();

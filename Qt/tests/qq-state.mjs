@@ -20,17 +20,7 @@ const song = {
     interval: 123,
 };
 const replies = {
-    '/qq/getSearchByKey': {
-        response: {
-            code: 0,
-            data: {
-                song: {
-                    list: [song],
-                    totalnum: 31,
-                },
-            },
-        },
-    },
+    '/qq/search': { code: 200, total: 31, more: true, items: [song] },
     '/qq/getSongInfo': {
         response: {
             code: 0,
@@ -85,6 +75,7 @@ const replies = {
         total: 1,
         more: false,
     },
+    '/qq/user/daily-songs': { code: 200, songs: [song] },
     '/qq/user/liked-songs': {
         code: 200,
         songs: [song],
@@ -224,51 +215,14 @@ assert.equal(
 const page = await api.search('曲目', 'song', 0);
 assert(page.more);
 assert.equal(page.items[0].albumID, 'albumMID');
-replies['/qq/getSearchByKey'] = {
-    response: {
-        code: 0,
-        data: {
-            song: {
-                list: [],
-                totalnum: 0,
-            },
-        },
-    },
-};
-replies['/qq/getSmartbox'] = {
-    response: {
-        code: 0,
-        data: {
-            song: {
-                itemlist: [
-                    {
-                        mid: 'songMID',
-                        name: '仅有提示',
-                    },
-                ],
-            },
-        },
-    },
-};
-const fallback = await new QQAPI(new API(host)).search('曲目', 'song');
-assert.equal(fallback.items[0].mediaId, 'mediaMID');
-assert.equal(fallback.items[0].title, 'QQ 曲目');
-assert.equal(fallback.more, false);
-assert.match(fallback.notice, /相关歌曲/);
-const requestsBeforeMore = calls.length;
-assert.equal((await api.search('曲目', 'song', 30)).items.length, 0);
-assert.equal(calls.length, requestsBeforeMore + 1);
-replies['/qq/getSmartbox'] = {
-    response: {
-        code: 0,
-        data: {
-            song: {
-                itemlist: [],
-            },
-        },
-    },
-};
+assert.deepEqual(calls.at(-1).params, { keyword: '曲目', type: 'song', page: 1, limit: 20 });
+replies['/qq/search'] = { code: 200, items: [], total: 0, more: false };
+const beforeEmpty = calls.length;
 assert.equal((await api.search('无结果', 'song')).items.length, 0);
+assert.equal(calls.length, beforeEmpty + 1);
+await api.search('专辑', 'album', 20);
+assert.equal(calls.at(-1).params.page, 2);
+assert.equal(calls.at(-1).params.type, 'album');
 assert.equal((await api.account())[0], '42');
 const personal = await api.userPlaylists('42');
 assert.equal(personal.items.length, 2);
@@ -312,7 +266,7 @@ host.request = (route, params, done) => {
 const owned = await api.detail(personal.items[0]);
 assert.deepEqual(offset, [0, 1]);
 assert.equal(owned[1].length, 2);
-const top = await api.discover('playlists');
+const top = await api.discover('charts');
 assert(top.items[0].chart);
 assert.equal(calls.at(-1).route, '/qq/getTopLists');
 const chartOffsets = [];
@@ -353,7 +307,7 @@ assert.equal((await api.detail(top.items[0]))[1].length, 2);
 assert.deepEqual(chartOffsets, [0, 1]);
 host.request = beforeChart;
 await api.discover('daily');
-assert.equal(calls.at(-1).route, '/qq/getRecommend');
+assert.equal(calls.at(-1).route, '/qq/user/daily-songs');
 await api.playback(parsed, 'lossless', false, () => true);
 assert.equal(calls.at(-1).params.mediaId, 'mediaMID');
 assert.equal(calls.at(-1).params.quality, 'flac');

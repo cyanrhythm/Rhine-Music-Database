@@ -351,7 +351,16 @@ export class KugouAPI {
             const url = array(body.url).find(
                 (entry) => typeof entry === 'string' && /^https?:\/\//.test(entry),
             );
-            return url ? { url, size: Number(body.fileSize || 0), br: Number(body.bitRate || 0) } : null;
+            return url
+                ? {
+                      url,
+                      size: Number(body.fileSize || 0),
+                      br: Number(body.bitRate || 0),
+                      extName: String(body.extName || ''),
+                      sampleRate: Number(body.sampleRate || 0),
+                      bitDepth: Number(body.bitDepth || 0),
+                  }
+                : null;
         };
         let track = await read(level);
         if (!track && level !== '128') {

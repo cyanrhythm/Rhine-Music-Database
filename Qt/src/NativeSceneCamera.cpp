@@ -102,6 +102,16 @@ void NativeScene::updateCamera(double seconds, std::optional<Cinema> cinema) {
     m_fogNear = renderedDistance + lerp(5 - 4 * theme, -1, m_detail);
     m_fogFar = renderedDistance + lerp(25 - 9 * theme, 12, m_detail);
     m_projection = Matrix::perspective(m_fov, aspect, 5, 300);
+    const auto listTarget = m_trackListView && !cinema ? 1.0 : 0.0;
+    m_trackListBlend = lerp(m_trackListBlend, listTarget, m_reduced ? 1 : 1 - std::exp(-seconds * 8));
+    if (std::abs(m_trackListBlend - listTarget) < 0.0001) {
+        m_trackListBlend = listTarget;
+    }
+    // 列主序投影的偏轴项将资料库向左移 8%、向下移 10%，不改变模型比例与观察角度。
+    m_projection.values[8] += 0.16 * m_trackListBlend;
+    m_projection.values[9] += 0.20 * m_trackListBlend;
+    m_aoProjection.values[8] = 0.16 * m_trackListBlend;
+    m_aoProjection.values[9] = 0.20 * m_trackListBlend;
     m_view = Matrix::camera(m_eye, m_aim).inverse();
 }
 
@@ -114,6 +124,8 @@ QVector<NativeScene::Cell> NativeScene::visibleCells(double trackX, double track
         Matrix::perspective(m_fov, m_width / m_height, 5, std::min(300.0, std::max(6.0, m_fogFar + 8)));
     projection.values[0] /= 1.18;
     projection.values[5] /= 1.18;
+    projection.values[8] += 0.16 * m_trackListBlend;
+    projection.values[9] += 0.20 * m_trackListBlend;
     const auto matrix = projection * m_view;
     const SceneMath::Frustum frustum(matrix);
     const auto inverse = matrix.inverse();

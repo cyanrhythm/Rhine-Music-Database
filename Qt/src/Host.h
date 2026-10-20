@@ -1,5 +1,6 @@
 #pragma once
 #include "AudioPlayer.h"
+#include "AppUpdater.h"
 #include <QCache>
 #include <QImage>
 #include <QJsonObject>
@@ -59,6 +60,7 @@ class Host : public QObject {
     Q_INVOKABLE QString read(QString name) const;
     QImage image(const QString &key) const;
     void fixtureImage(const QString &key, const QImage &image);
+    AppUpdater updater;
     QString root;
     bool offline;
     std::function<QJsonObject(QString, QJsonObject)> fixture;

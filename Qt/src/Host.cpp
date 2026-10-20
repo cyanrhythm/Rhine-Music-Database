@@ -39,7 +39,9 @@ static QString routeProvider(const QString &route) {
     }
     return "netease";
 }
-Host::Host(QString path, bool test, QObject *parent) : QObject(parent), root(path), offline(test) {
+Host::Host(QString path, bool test, QObject *parent)
+    : QObject(parent), updater(test), root(path), offline(test) {
+    connect(&updater, &AppUpdater::changed, this, &Host::invalidate);
     if (preference("kugou-edition") == "lite") {
         kugouEdition = "lite";
     }
@@ -128,6 +130,12 @@ int Host::lifetime(const QString &route) {
         return route.startsWith("/kugou/user/") ? 60 : 900;
     }
     if (route.startsWith("/qq/")) {
+        if (QStringList{"/qq/user/song/like", "/qq/user/album/subscribe", "/qq/user/playlist/subscribe",
+                        "/qq/user/playlist/tracks", "/qq/user/playlist/create", "/qq/user/playlist/rename",
+                        "/qq/user/playlist/delete", "/qq/user/subscription-status"}
+                .contains(route)) {
+            return 0;
+        }
         if (route.startsWith("/qq/login/") || route == "/qq/logout" || route == "/qq/getMusicPlay") {
             return 0;
         }
@@ -182,7 +190,7 @@ void Host::requestJson(QString route, QJsonObject values, JsonReply callback) {
     const bool cached = lifetime(route) > 0;
     const auto key =
         cached
-            ? cacheKey("enhanced-4.41.1/qq-3.1.5/kugou-ba3645f2/" + scope + QString::number(metadataRevision),
+            ? cacheKey("enhanced-4.41.1/qq-3.3.1/kugou-ba3645f2/" + scope + QString::number(metadataRevision),
                        route, values)
             : QUuid::createUuid().toString();
     const bool disk = !offline && scope == "guest" &&
@@ -562,7 +570,7 @@ void Host::loadCover(QString input, TextReply callback) {
     }
     QUrlQuery query(url);
     query.removeAllQueryItems("param");
-    query.addQueryItem("param", "512y512");
+    query.addQueryItem("param", "1024y1024");
     url.setQuery(query);
     auto key = url.toString();
     if (images.contains(key)) {
@@ -634,7 +642,10 @@ void Host::loadCover(QString input, TextReply callback) {
             if (!size.isValid() || size.width() > 8192 || size.height() > 8192) {
                 return QImage();
             }
-            reader.setScaledSize(size.scaled(512, 512, Qt::KeepAspectRatio));
+            // 保留大封面的细节；小图不在解码阶段放大，避免重复插值。
+            if (size.width() > 1024 || size.height() > 1024) {
+                reader.setScaledSize(size.scaled(1024, 1024, Qt::KeepAspectRatio));
+            }
             return reader.read();
         }));
     });
@@ -659,6 +670,18 @@ QString Host::qr(QString key) {
     return name;
 }
 QImage Host::image(const QString &key) const {
+    // 官方音质标识随包离线交付；限定文件名，防止图片键访问资源目录之外。
+    static const QRegularExpression qualityKey(
+        "^quality:(netease|qq|kugou)-(sq|hq|hires|jymaster|jyeffect|sky)$");
+    if (key.startsWith("quality:") && qualityKey.match(key).hasMatch()) {
+        static QCache<QString, QImage> badges(32);
+        if (auto cached = badges.object(key)) {
+            return *cached;
+        }
+        const QImage badge(root + "/quality/" + key.mid(8) + ".png");
+        badges.insert(key, new QImage(badge));
+        return badge;
+    }
     auto p = images.object(key);
     return p ? *p : QImage();
 }
@@ -673,7 +696,12 @@ void Host::trimMemory(const QStringList &retainedImages) {
     // 请求结果仍可从磁盘按需读取；保留当前 HUD 图片，避免恢复后二维码或封面空白。
     cache.clear();
     images.clear();
-    images.setMaxCost(4 * 1024);
+    int retainedCost = 0;
+    for (const auto &pixels : retained) {
+        retainedCost += qMax(1, int(pixels.sizeInBytes() / 1024));
+    }
+    // 渲染预算
+    images.setMaxCost(qMax(4 * 1024, retainedCost));
     for (auto it = retained.begin(); it != retained.end(); ++it) {
         images.insert(it.key(), new QImage(it.value()), qMax(1, int(it->sizeInBytes() / 1024)));
     }
@@ -757,6 +785,9 @@ QString Host::preference(QString key) const {
                                 "play-history",
                                 "theme",
                                 "motion",
+                                "disc-rotation",
+                                "scene-enhancement",
+                                "auto-update",
                                 "volume",
                                 "quality",
                                 "alternate-source",
@@ -784,6 +815,9 @@ void Host::setPreference(QString key, QString value) {
                     "play-history",
                     "theme",
                     "motion",
+                    "disc-rotation",
+                    "scene-enhancement",
+                    "auto-update",
                     "volume",
                     "quality",
                     "alternate-source",

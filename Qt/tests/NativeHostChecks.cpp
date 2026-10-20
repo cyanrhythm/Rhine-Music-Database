@@ -47,12 +47,18 @@ bool runNativeHostChecks(const QString &root) {
 
     QImage image(2, 2, QImage::Format_RGBA8888);
     image.fill(Qt::red);
-    const QString cover = "https://music.126.net/native-fixture.jpg?param=512y512";
+    const QString cover = "https://music.126.net/native-fixture.jpg?param=1024y1024";
     host.fixtureImage(cover, image);
     bool coverReady = false;
-    host.loadCover("https://music.126.net/native-fixture.jpg",
+    host.loadCover("https://music.126.net/native-fixture.jpg?param=128y128",
                    [&](QString key) { coverReady = key == cover && host.image(key) == image; });
     ok &= coverReady;
+    QImage largeCover(1024, 1024, QImage::Format_RGBA8888);
+    largeCover.fill(Qt::blue);
+    host.fixtureImage("current-cover", largeCover);
+    host.fixtureImage("playing-cover", largeCover);
+    host.trimMemory({"current-cover", "playing-cover"});
+    ok &= host.image("current-cover") == largeCover && host.image("playing-cover") == largeCover;
     bool invalidId = false;
     bool official = false;
     host.playOfficial("invalid", [&](QString error) { invalidId = error == "请先选择一首歌曲"; });

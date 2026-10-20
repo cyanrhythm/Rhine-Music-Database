@@ -117,7 +117,8 @@ bool runNativeHudChecks(const QString &root, Glyphs &glyphs, const QString &fixt
                 hud.motion.set(true, 0, true);
                 const auto key = provider + ":" + panel + (dark ? ":dark" : ":light");
                 auto expected = references.value(key);
-#ifdef Q_OS_WIN
+#ifndef Q_OS_MACOS
+                // 固定帧以 macOS 的修饰键录制，其他平台渲染同一份动作时换成 Ctrl。
                 auto commands = expected["commands"].toArray();
                 for (int index = 0; index < commands.size(); ++index) {
                     auto command = commands.at(index).toArray();
@@ -128,11 +129,64 @@ bool runNativeHudChecks(const QString &root, Glyphs &glyphs, const QString &fixt
                 }
                 expected["commands"] = commands;
 #endif
+                // 列切换右箭头为避免压住标签右移 77；只调整这一项冻结几何。
+                auto revisedCommands = expected["commands"].toArray();
+                for (int index = 0; index < revisedCommands.size(); ++index) {
+                    auto command = revisedCommands.at(index).toArray();
+                    if (command.at(0) == "text" && command.at(1) == "→" &&
+                        command.at(2).toDouble() == 1920 * 0.5234375 + 233 &&
+                        command.at(3).toDouble() == 908) {
+                        command[2] = command.at(2).toDouble() + 77;
+                        revisedCommands[index] = command;
+                    }
+                }
+                expected["commands"] = revisedCommands;
+                auto revisedHits = expected["hits"].toArray();
+                for (int index = 0; index < revisedHits.size(); ++index) {
+                    auto hit = revisedHits.at(index).toObject();
+                    if (hit["action"] == "column-next") {
+                        hit["x"] = hit["x"].toDouble() + 77;
+                        revisedHits[index] = hit;
+                    }
+                }
+                expected["hits"] = revisedHits;
                 hud.draw(frame, 1920, 50);
                 const auto expectedCommands = expected["commands"].toArray();
                 const auto expectedHits = expected["hits"].toArray();
-                const bool sameHits = hud.hits == expectedHits;
-                const bool samePixels = paint(glyphs, hud.commands) == paint(glyphs, expectedCommands);
+                auto actualHits = hud.hits;
+                auto actualPixels = paint(glyphs, hud.commands);
+                auto expectedPixels = paint(glyphs, expectedCommands);
+                // 新按钮单独由真实窗口回归验收；冻结对照只跳过其明确占用的小区域。
+                for (int index = actualHits.size() - 1; index >= 0; --index) {
+                    if (actualHits.at(index).toObject()["action"] == "archive:tab-mode") {
+                        actualHits.removeAt(index);
+                        for (auto *image : {&actualPixels, &expectedPixels}) {
+                            QPainter painter(image);
+                            painter.setCompositionMode(QPainter::CompositionMode_Source);
+                            painter.fillRect(QRect(1572, 854, 194, 48), Qt::transparent);
+                        }
+                    }
+                }
+                if (panel == "settings") {
+                    // 新增滚动轨道位于原留白处；其余设置行继续对照迁移前的尺寸、位置和像素。
+                    actualHits = {};
+                    for (const auto &value : hud.hits) {
+                        if (!value.toObject()["action"].toString().startsWith("settings:scroll-")) {
+                            actualHits.append(value);
+                        }
+                    }
+                    const auto bounds = hud.modalBounds(1920);
+                    const QRect rail(int(bounds.right() - 35),
+                                     int(bounds.top() + NativeHud::SettingsViewportTop), 28,
+                                     int(NativeHud::SettingsViewportBottom - NativeHud::SettingsViewportTop));
+                    for (auto *image : {&actualPixels, &expectedPixels}) {
+                        QPainter painter(image);
+                        painter.setCompositionMode(QPainter::CompositionMode_Source);
+                        painter.fillRect(rail, Qt::transparent);
+                    }
+                }
+                const bool sameHits = actualHits == expectedHits;
+                const bool samePixels = actualPixels == expectedPixels;
                 if (!sameHits || !samePixels) {
                     ok = false;
                     const auto name = provider + ":" + panel + (dark ? ":dark" : ":light");
@@ -154,6 +208,37 @@ bool runNativeHudChecks(const QString &root, Glyphs &glyphs, const QString &fixt
                         }
                         paint(glyphs, hud.commands).save(prefix + "-actual.png");
                         paint(glyphs, expectedCommands).save(prefix + "-expected.png");
+                    }
+                }
+                if (panel == "settings") {
+                    const auto bounds = hud.modalBounds(1920);
+                    hud.wheel(bounds.center().x(), bounds.top() + 500, -120, 1, 10000.);
+                    hud.draw(frame, 1920, 50);
+                    bool performanceVisible = false;
+                    bool headerFixed = false;
+                    bool clipped = true;
+                    for (const auto &value : hud.hits) {
+                        const auto hit = value.toObject();
+                        const auto action = hit["action"].toString();
+                        if (action == "close-modal") {
+                            headerFixed = hit["y"].toDouble() == bounds.top() + 18;
+                        } else if (!action.startsWith("settings:scroll-") && !action.startsWith("player:")) {
+                            clipped &= hit["y"].toDouble() >= bounds.top() + NativeHud::SettingsViewportTop;
+                            clipped &= hit["y"].toDouble() + hit["height"].toDouble() <=
+                                       bounds.top() + NativeHud::SettingsViewportBottom;
+                        }
+                        performanceVisible |= action == "performance:toggle";
+                    }
+                    const bool atEnd = hud.settingsScroll == hud.settingsScrollMaximum();
+                    hud.wheel(bounds.center().x(), bounds.top() + 500, 120, -1, -10000.);
+                    const bool atStart = hud.settingsScroll == 0;
+                    hud.action("settings:scroll-down");
+                    hud.openModal("settings");
+                    const bool reset = hud.settingsScroll == 0;
+                    if (!performanceVisible || !headerFixed || !clipped || !atEnd || !atStart || !reset) {
+                        qCritical() << "Settings scroll regression" << provider << performanceVisible
+                                    << headerFixed << clipped << atEnd << atStart << reset;
+                        ok = false;
                     }
                 }
                 ++count;

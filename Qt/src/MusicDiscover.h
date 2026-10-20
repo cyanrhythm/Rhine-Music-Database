@@ -18,6 +18,8 @@ class MusicDiscover {
     bool more = false;
     QString category = "全部";
     QJsonArray categories;
+    QJsonArray newSongAreas;
+    QString newSongArea = "5";
 
   private:
     MusicLibrary *m_store;

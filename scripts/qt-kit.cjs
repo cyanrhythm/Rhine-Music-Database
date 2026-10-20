@@ -10,11 +10,15 @@ const versions = Object.freeze({
     release: '6.8.3',
 });
 /**
- * 返回 Qt kit 根目录。Windows 没有可移植的默认安装路径，必须显式设置 QT_ROOT。
+ * 返回 Qt kit 根目录：macOS 用官方安装目录，Linux 用发行版的 /usr，
+ * Windows 没有可移植的默认路径，必须显式设置 QT_ROOT。
  */
 function defaultRoot() {
     if (process.env.QT_ROOT) {
         return process.env.QT_ROOT;
+    }
+    if (process.platform === 'linux') {
+        return '/usr';
     }
     return process.platform === 'darwin' ? path.join(os.homedir(), 'Qt', versions.development, 'macos') : '';
 }

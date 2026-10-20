@@ -102,8 +102,9 @@ async function main() {
         });
         assert.equal(standard.body.code, 200);
         assert(standard.body.data[0].url);
-        assert.equal(audio.body.data[0].requestedBr, 999000);
-        assert.equal(standard.body.data[0].requestedBr, 128000);
+        assert.equal(audio.body.data[0].level, 'lossless');
+        assert.equal(audio.body.data[0].keyRegistrations, 1);
+        assert.equal(standard.body.data[0].level, 'standard');
         const authenticated = await request(
             'authenticated',
             '/song/url/v1',
@@ -117,7 +118,10 @@ async function main() {
             },
         );
         assert.equal(authenticated.body.data[0].authenticated, true);
-        assert.equal(authenticated.body.data[0].requestedBr, 320000);
+        assert.equal(authenticated.body.data[0].level, 'exhigh');
+        const master = await request('master', '/song/url/v1', { id: '1', level: 'jymaster' });
+        assert.equal(master.body.data[0].level, 'jymaster');
+        assert.equal(master.body.data[0].keyRegistrations, 1);
         const denied = await request('denied', '/song/url/v1', {
             id: '2',
             level: 'standard',
@@ -127,8 +131,8 @@ async function main() {
         const savedDevice = deviceContext.createAndroidDevice();
         const qq = await request(
             'qq',
-            '/qq/getSearchByKey',
-            { key: 'fixture' },
+            '/qq/search',
+            { keyword: 'fixture', type: 'song', page: 1, limit: 20 },
             {
                 qqmusic_session: 'fixture-session',
                 __qqSessions: [
@@ -137,12 +141,32 @@ async function main() {
                         token: 'fixture-session',
                         credential: { musicid: '42', musickey: 'fixture-key', loginType: 6 },
                         device: savedDevice,
-                        expiresAt: Date.now() + 3600000,
+                        expiresAt: Date.now() + 72 * 3600000,
                     },
                 ],
             },
         );
-        assert.equal(qq.body.response.data.song.list[0].mid, 'fixtureMID');
+        assert.equal(qq.body.code, 200, JSON.stringify(qq.body));
+        assert.equal(qq.body.items[0].mid, 'fixtureMID');
+        for (const [type, field, id] of [
+            ['album', 'albummid', 'albumMID'],
+            ['playlist', 'dissid', '70001'],
+            ['singer', 'singerMID', 'singerMID'],
+        ]) {
+            const result = await request('qq-search-' + type, '/qq/search', { keyword: 'fixture', type });
+            assert.equal(result.body.items[0][field], id);
+        }
+        const features = await request('qq-capabilities', '/qq/login/channels');
+        assert.equal(features.body.data.features.mutations.likeSong, true);
+        assert.equal(features.body.data.features.mutations.subscribeAlbum, true);
+        // 缺少必填正文应由 POST 的 schema 拒绝，而不是被错误地作为 GET 返回 405。
+        const invalidWrite = await request(
+            'qq-post',
+            '/qq/user/song/like',
+            { song: {} },
+            { qqmusic_session: 'fixture-session' },
+        );
+        assert.equal(invalidWrite.body.code, 400);
         const deviceRecord = JSON.parse(fs.readFileSync(path.join(temp, 'qq-device.json')));
         assert.deepEqual(deviceRecord.device, savedDevice);
         assert.equal(deviceRecord.device.musickey, undefined);

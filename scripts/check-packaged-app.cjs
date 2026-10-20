@@ -5,11 +5,22 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const mac = process.platform === 'darwin';
-if (!mac && process.platform !== 'win32') {
-    throw new Error('Package smoke test requires macOS or Windows');
+const win = process.platform === 'win32';
+const linux = process.platform === 'linux';
+if (!mac && !linux && !win) {
+    throw new Error('Package smoke test requires macOS, Linux or Windows');
 }
+const platforms = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
+const platform = platforms[process.platform];
+// 部署布局：macOS 在 bundle 内，Linux 与程序同目录，Windows 在其下一级。
+const layouts = {
+    darwin: ['Contents/Resources', 'Contents/MacOS/RhineMusicDatabase'],
+    linux: ['usr/bin/resources', 'usr/bin/RhineMusicDatabase'],
+    win32: ['resources', 'RHINE MUSIC DATABASE.exe'],
+};
+const [resourceDirectory, executable] = layouts[process.platform];
 const app = path.resolve(process.argv[2]);
-const resources = path.join(app, mac ? 'Contents/Resources' : 'resources');
+const resources = path.join(app, resourceDirectory);
 assert(
     fs.existsSync(path.join(resources, 'scene-fixture.json')),
     'Package is missing the offline scene fixture',
@@ -17,6 +28,11 @@ assert(
 if (mac) {
     assert(
         fs.existsSync(path.join(app, 'Contents/PlugIns/platforms/libqoffscreen.dylib')),
+        'Package is missing the offscreen platform plugin',
+    );
+} else if (linux) {
+    assert(
+        fs.existsSync(path.join(app, 'usr/plugins/platforms/libqoffscreen.so')),
         'Package is missing the offscreen platform plugin',
     );
 } else {
@@ -31,7 +47,9 @@ const env = {
 };
 for (const name of Object.keys(env)) {
     if (
-        /^(?:PATH|QT_PLUGIN_PATH|QT_QPA_PLATFORM_PLUGIN_PATH|QML_IMPORT_PATH|QML2_IMPORT_PATH|RHINE_RESOURCES|QT_MEDIA_BACKEND)$/i.test(
+        // LD_LIBRARY_PATH 的优先级高于 RUNPATH，CI 的 install-qt-action 会设置它，
+        // 不清理就会加载宿主 Qt，冒烟测试验证不到随包运行时。
+        /^(?:PATH|LD_LIBRARY_PATH|QT_PLUGIN_PATH|QT_QPA_PLATFORM_PLUGIN_PATH|QML_IMPORT_PATH|QML2_IMPORT_PATH|RHINE_RESOURCES|QT_MEDIA_BACKEND)$/i.test(
             name,
         )
     ) {
@@ -39,27 +57,28 @@ for (const name of Object.keys(env)) {
     }
 }
 const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT;
-if (!mac) {
+if (!mac && !linux) {
     assert(systemRoot, 'Windows system directory is required');
 }
-env.PATH = mac ? '/usr/bin:/bin' : `${systemRoot}\\System32;${systemRoot}`;
+env.PATH = win ? `${systemRoot}\\System32;${systemRoot}` : '/usr/bin:/bin';
 env.QT_QPA_PLATFORM = 'offscreen';
 env.QT_LOGGING_RULES = 'qt.multimedia.plugin=true';
-env.RHINE_GPU_TEST = mac ? process.env.RHINE_GPU_TEST || '0' : '1';
+// 无显示服务器的构建机没有 GL 设备，只有 Windows 默认强制 GPU 参考比较。
+env.RHINE_GPU_TEST = process.env.RHINE_GPU_TEST || (win ? '1' : '0');
+if (linux) {
+    // 强制走软件光栅，避免无 DRI 设备时回落到驱动初始化失败。
+    env.LIBGL_ALWAYS_SOFTWARE = '1';
+}
 env.RHINE_SOFTWARE_GPU = '1';
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'rhine package smoke '));
 async function main() {
     try {
         await new Promise((resolve, reject) => {
-            const child = spawn(
-                path.join(app, mac ? 'Contents/MacOS/RhineMusicDatabase' : 'RHINE MUSIC DATABASE.exe'),
-                ['--self-test'],
-                {
-                    cwd,
-                    env,
-                    stdio: ['ignore', 'pipe', 'pipe'],
-                },
-            );
+            const child = spawn(path.join(app, executable), ['--self-test'], {
+                cwd,
+                env,
+                stdio: ['ignore', 'pipe', 'pipe'],
+            });
             let failure;
             let stderr = '';
             const stop = (reason) => {
@@ -97,7 +116,7 @@ async function main() {
             });
         });
         console.log(
-            `Deployed ${mac ? 'macOS' : 'Windows'} application, isolated Qt paths and bundled resources passed offline (GPU=${env.RHINE_GPU_TEST})`,
+            `Deployed ${platform} application, isolated Qt paths and bundled resources passed offline (GPU=${env.RHINE_GPU_TEST})`,
         );
     } finally {
         fs.rmSync(cwd, {

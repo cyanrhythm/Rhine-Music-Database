@@ -8,8 +8,26 @@
 namespace {
 QString loginFailureMessage(const QJsonObject &details) {
     const auto failure = details["lastFailure"].isObject() ? details["lastFailure"].toObject() : details;
-    if (failure["upstreamCode"].toInt() == 20279) {
+    const auto primary = failure["primaryFailure"].toObject();
+    const auto upstreamError = primary["upstreamErrorKey"].toString(failure["upstreamErrorKey"].toString());
+    if (failure["upstreamCode"].toInt() == 20279 || primary["upstreamCode"].toInt() == 20279 ||
+        upstreamError == "auth.device-limit") {
         return QStringLiteral("登录设备数量已达上限，请在 QQ 音乐设备管理中删除无用设备");
+    }
+    if (primary["upstreamCode"].toInt() == 50006) {
+        return QStringLiteral("请使用手机 QQ 扫描手机 QQ 通道二维码，再尝试登录");
+    }
+    if (upstreamError == "auth.rate-limited" || primary["upstreamCode"].toInt() == 104604 ||
+        failure["upstreamCode"].toInt() == 104604) {
+        return QStringLiteral("QQ 登录操作过于频繁，请等待冷却后重试");
+    }
+    const QHash<QString, QString> messages{
+        {"auth.account-restricted", "账号当前受限，请在 QQ 音乐客户端检查"},
+        {"auth.account-banned", "QQ 返回账号被封禁，请在官方客户端核实"},
+        {"auth.account-binding", "账号绑定状态异常，请在 QQ 音乐客户端检查"},
+    };
+    if (messages.contains(upstreamError)) {
+        return messages.value(upstreamError);
     }
     if (failure["failureReason"] == "qr-timeout") {
         return QStringLiteral("二维码已过期，请重新生成");
@@ -79,16 +97,47 @@ void MusicLibrary::restoreCachedAccount() {
     }
 }
 
+/** 查询锁定上游公布的功能与会员信息 */
+void MusicLibrary::refreshQQFeatures() {
+    if (provider != "qq") {
+        return;
+    }
+    const auto alive = valid(m_accountGeneration, &m_accountGeneration);
+    api.call(
+        "capabilities", {},
+        [this](MusicReply result) {
+            if (result.ok()) {
+                capabilities = result.value.toObject();
+                changed();
+            }
+        },
+        alive);
+    if (host->authenticated()) {
+        api.call(
+            "vip", {},
+            [this](MusicReply result) {
+                vipLevel = result.ok() ? result.value.toObject()["vipLevel"].toString("unknown") : "unknown";
+                changed();
+            },
+            alive);
+    }
+}
+
 void MusicLibrary::restoreAccount(Completion done) {
+    refreshQQFeatures();
     if (!host->authenticated()) {
         if (done) {
             done(true);
         }
         return;
     }
+    restoringAccount = true;
+    m_accountError.clear();
+    changed();
     api.call(
         "account", {},
         [this, done](MusicReply result) {
+            restoringAccount = false;
             if (result.ok()) {
                 const auto values = result.value.toArray();
                 uid = values.at(0).toString();
@@ -102,6 +151,12 @@ void MusicLibrary::restoreAccount(Completion done) {
                 status = QStringLiteral("登录已失效，请重新登录");
             } else {
                 status = QStringLiteral("账号验证暂不可用，已保留本机登录记录");
+            }
+            m_accountError = result.ok() ? QString() : status;
+            const auto pending = m_pendingLane;
+            m_pendingLane = -1;
+            if (result.ok() && pending > 0) {
+                loadMoreSource(pending);
             }
             changed();
             if (done) {
@@ -142,6 +197,10 @@ void MusicLibrary::switchProvider(QString source, QString edition, Completion do
     host->setPreference("provider", source);
     api.provider = source;
     restoreCachedAccount();
+    restoringAccount = false;
+    m_pendingLane = -1;
+    m_accountError.clear();
+    m_sourceErrors.fill({});
     loginStatus.clear();
     loginDiagnostics = {};
     current = {};
@@ -173,6 +232,9 @@ void MusicLibrary::switchProvider(QString source, QString edition, Completion do
     trackLoad = false;
     writeLoading = false;
     subscriptions.clear();
+    subscriptionStates.clear();
+    capabilities = {};
+    vipLevel = "unknown";
     searchKind = "song";
     keyword.clear();
     suggestions.clear();
@@ -334,10 +396,13 @@ void MusicLibrary::confirmLogin(quint64 token, bool password) {
                 return;
             }
             ++m_accountGeneration;
+            restoringAccount = false;
+            m_accountError.clear();
             uid = result.value.toArray().at(0).toString();
             nickname = result.value.toArray().at(1).toString();
             rememberIdentityName(provider, nickname);
             loginStatus = QStringLiteral("已登录：") + nickname;
+            refreshQQFeatures();
             status = password ? loginStatus : QStringLiteral("已登录，可读取我的音乐");
             if (!password) {
                 qr.clear();
@@ -498,6 +563,8 @@ void MusicLibrary::logout() {
     const auto clearSelection = selectedLane > 0 || privateSelection;
     writeLoading = false;
     subscriptions.clear();
+    subscriptionStates.clear();
+    vipLevel = "unknown";
     discover->cancel();
     player.stop();
     player.history = {};
@@ -510,6 +577,10 @@ void MusicLibrary::logout() {
     groupIndices.clear();
     cancelLogin();
     ++m_accountGeneration;
+    restoringAccount = false;
+    m_pendingLane = -1;
+    m_accountError.clear();
+    m_sourceErrors.fill({});
     host->logout();
     host->setPreference("account-id-" + accountKey(), "");
     uid.clear();

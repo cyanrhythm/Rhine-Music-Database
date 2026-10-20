@@ -1,6 +1,50 @@
 // 发布包测试使用本地 HTTP 响应，保持真实上游协议模块参与执行。
 const path = require('node:path');
 const bridge = process.env.RHINE_TEST_BRIDGE;
+const originalFetch = global.fetch;
+// 新的共用 QQ 接口使用 Fetch；本地桥接 HTTP 仍走真实回环服务。
+global.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (new URL(request.url).hostname !== 'u.y.qq.com') {
+        return originalFetch(input, init);
+    }
+    const raw =
+        request.method === 'POST' ? await request.text() : new URL(request.url).searchParams.get('data');
+    const payload = JSON.parse(raw || '{}');
+    const response = { code: 0 };
+    for (const [key, rpc] of Object.entries(payload)) {
+        if (!rpc?.method) {
+            continue;
+        }
+        if (rpc.method === 'DoSearchForQQMusicLite') {
+            const keys = { 0: 'item_song', 1: 'singer', 2: 'item_album', 3: 'item_songlist' };
+            const type = rpc.param.search_type;
+            const entries = {
+                0: {
+                    mid: 'fixtureMID',
+                    id: 42,
+                    type: 0,
+                    name: 'QQ fixture',
+                    singer: [],
+                    album: { mid: 'albumMID' },
+                },
+                1: { singerMID: 'singerMID', singerName: 'QQ fixture artist' },
+                2: { albummid: 'albumMID', name: 'QQ fixture album' },
+                3: { dissid: '70001', dissname: 'QQ fixture playlist' },
+            };
+            response[key] = {
+                code: 0,
+                data: {
+                    meta: { sum: 1, curpage: 1, nextpage: -1, ret: 0 },
+                    body: { [keys[type]]: [entries[type]] },
+                },
+            };
+        } else {
+            throw new Error('Unexpected QQ Fetch operation: ' + rpc.method);
+        }
+    }
+    return Response.json(response);
+};
 const axios = require(
     require.resolve('axios', {
         paths: [bridge],
@@ -9,6 +53,22 @@ const axios = require(
 const upstreamCrypto = require(
     path.join(bridge, 'node_modules/@neteasecloudmusicapienhanced/api/util/crypto'),
 );
+// 本地响应使用测试密钥加密；请求仍经过上游注册校验、加密和响应解密。
+const crypto = require('node:crypto');
+const keyPair = crypto.generateKeyPairSync('x25519');
+const publicKey = keyPair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64');
+let keyRegistrations = 0;
+const xeapiRequests = new Map();
+const originalXeapi = upstreamCrypto.xeapi;
+upstreamCrypto.xeapi = (uri, payload, options) => {
+    const encrypted = originalXeapi(uri, payload, options);
+    xeapiRequests.set(encrypted.C, { payload, version: options.publicKeyState.version });
+    return encrypted;
+};
+function encryptFixture(value, key) {
+    const cipher = crypto.createCipheriv(`aes-${key.length * 8}-ecb`, key, null);
+    return Buffer.concat([cipher.update(JSON.stringify(value)), cipher.final()]);
+}
 axios.defaults.adapter = async (settings) => {
     const destination = (settings.baseURL || '') + settings.url;
     if (/\.kugou\.com/.test(destination)) {
@@ -159,25 +219,63 @@ axios.defaults.adapter = async (settings) => {
             };
         }
     }
-    if (destination.endsWith('/api/bsr/sk/get') || destination.includes('/xeapi/')) {
-        throw new Error('Playback must not depend on unavailable xeapi key registration');
-    }
-    if (
-        destination.includes('/song/enhance/player/url') &&
-        !destination.split('?')[0].endsWith('/eapi/song/enhance/player/url')
-    ) {
-        throw new Error('Expected documented song_url fallback with upstream default protocol');
-    }
-    if (destination.split('?')[0].endsWith('/eapi/song/enhance/player/url')) {
-        const payload = upstreamCrypto.eapiReqDecrypt(new URLSearchParams(settings.data).get('params')).data;
-        data.data[0].requestedBr = payload.br;
-        data.data[0].authenticated = payload.header.MUSIC_U === 'fixture-account';
-        if (JSON.parse(payload.ids)[0] === '2') {
-            data = {
-                code: 403,
-                message: 'fixture permission denied',
-            };
+    if (destination.endsWith('/api/bsr/sk/get')) {
+        keyRegistrations++;
+        // 留出并发窗口，验证同一桥接只发起一次注册。
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        const payload = new URLSearchParams(settings.data);
+        if (
+            !payload.get('deviceId') ||
+            payload.get('signature') !==
+                upstreamCrypto.xeapiSign(payload.get('timestamp'), payload.get('nonce'))
+        ) {
+            throw new Error('XEAPI registration must retain upstream device and signature');
         }
+        const timestamp = String(Date.now());
+        let nextUpdateTime = Date.now() + 3600000;
+        if (process.env.RHINE_TEST_XEAPI_EXPIRE_FIRST === '1' && keyRegistrations === 1) {
+            nextUpdateTime = Date.now() - 1;
+        }
+        const encryptedData = encryptFixture(
+            { publicKey, version: String(keyRegistrations), sk: 'fixture-sk', nextUpdateTime },
+            Buffer.from('ab1d5a430f6bb04a3f01e81ddd72bd916d5ce591248ac128714806d7f8fb1b84', 'hex'),
+        ).toString('base64');
+        const shouldFail = process.env.RHINE_TEST_XEAPI_FAIL_FIRST === '1' && keyRegistrations === 1;
+        data = {
+            code: 200,
+            data: {
+                encryptedData,
+                timestamp,
+                signature: shouldFail ? 'invalid' : upstreamCrypto.xeapiSign(timestamp, payload.get('nonce')),
+            },
+        };
+    } else if (destination.split('?')[0].endsWith('/xeapi/song/enhance/player/url/v1')) {
+        const encrypted = new URLSearchParams(settings.data);
+        const request = xeapiRequests.get(encrypted.get('C'));
+        xeapiRequests.delete(encrypted.get('C'));
+        if (!request || !settings.headers['x-deviceid']) {
+            throw new Error('Expected genuine upstream XEAPI request');
+        }
+        data = {
+            code: 200,
+            data: [
+                {
+                    id: 1,
+                    url: 'https://music.126.net/fixture.flac',
+                    type: 'flac',
+                    level: request.payload.level,
+                    authenticated: settings.headers['x-music-u'] === 'fixture-account',
+                    keyRegistrations,
+                    keyVersion: request.version,
+                },
+            ],
+        };
+        if (String(JSON.parse(request.payload.ids)[0]) === '2') {
+            data = { code: 403, message: 'fixture permission denied' };
+        }
+        data = encryptFixture(data, Buffer.from('e82ckenh8dichen8'));
+    } else if (destination.includes('/song/enhance/player/url')) {
+        throw new Error('Quality requests must not silently fall back to the legacy bitrate endpoint');
     }
     return {
         status: 200,

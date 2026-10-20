@@ -111,6 +111,10 @@ const host = {
             body.data = { count: 1, songs: [song] };
         } else if (route === '/kugou/song/url') {
             body.url = params.quality === '128' ? ['https://fs.kugou.com/test.mp3'] : [];
+            body.bitRate = 128000;
+            body.extName = 'mp3';
+            body.sampleRate = 44100;
+            body.bitDepth = 16;
         } else if (route === '/kugou/search') {
             body.data = { total: 61, lists: [song] };
         }
@@ -144,6 +148,10 @@ assert.equal(requests.at(-1)[1].listid, '1');
 assert.equal(requests.at(-1)[1].type, 0);
 const track = await api.playback(parsed, 'lossless', false, () => true);
 assert.equal(track.qualityFallback, '标准');
+assert.equal(track.br, 128000);
+assert.equal(track.extName, 'mp3');
+assert.equal(track.sampleRate, 44100);
+assert.equal(track.bitDepth, 16);
 assert.equal(requests.at(-1)[1].album_audio_id, '456');
 const pages = [];
 const paged = new KugouAPI({

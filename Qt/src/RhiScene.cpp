@@ -12,6 +12,7 @@
 #include <rhi/qrhi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <vector>
@@ -424,9 +425,12 @@ class Renderer {
                                                                         : 0;
         return {v4(vector(d["color"]), n(d, "opacity")),
                 {n(d, "roughness"), n(d, "metalness"), n(d, "transmission"), n(d, "thickness")},
-                {n(d, "ior"), n(d, "attenuationDistance"), name == "Index_Inlay" ? 1.f : 0.f, 0},
+                {n(d, "ior"), n(d, "attenuationDistance"), name == "Index_Inlay" ? 1.f : 0.f,
+                 d["sharpCover"].toBool() ? 1.f : 0.f},
                 v4(vector(d["attenuation"])),
-                {n(d, "clearcoat"), n(d, "clearcoatRoughness"), optical ? 1.f : 0.f, 0},
+                {n(d, "clearcoat"), n(d, "clearcoatRoughness"),
+                 type == 6 ? float(std::cos(n(d, "discAngle"))) : (optical ? 1.f : 0.f),
+                 type == 6 ? float(std::sin(n(d, "discAngle"))) : 0.f},
                 {type, n(d, "side"), n(d, "subdued"), d["floor"].toBool() ? 1.f : 0.f},
                 v4(dark(name), d["instanced"].toBool() ? 1.f : 0.f)};
     }
@@ -454,16 +458,26 @@ class Renderer {
                 d["depthWrite"] = true;
             }
             if (name == "Frosted_Polymer" && !d["instanced"].toBool()) {
-                // 选中的光盘盒只保留轻磨砂；阵列及原来的清晰度揭示动画不变。
+                // 资料库轻磨砂；详情状态透明
                 const double quality = n(d, "quality");
                 d["thickness"] = .028 * quality + n(d, "thickness") * (1 - quality);
                 d["transmission"] = .97 * quality + n(d, "transmission") * (1 - quality);
+                if (f["mode"] == "detail" && d["musicSelected"].toBool() && !f["reference"].toBool() &&
+                    !f["viewer"].toBool()) {
+                    // 透明
+                    d["clarity"] = 1;
+                    d["thickness"] = .018;
+                    d["transmission"] = .985;
+                    d["attenuationDistance"] = 8;
+                    d["sharpCover"] = true;
+                }
             }
             result << d;
             if (name != "Frosted_Polymer" || d["shadowOnly"].toBool()) {
                 continue;
             }
             auto part = d;
+            part.remove("sharpCover");
             part["color"] = QJsonArray{1, 1, 1};
             part["roughness"] = .36;
             part["metalness"] = 0;
@@ -477,6 +491,7 @@ class Renderer {
             part["order"] = 0;
             part["side"] = 2;
             part["castShadow"] = false;
+            part["discAngle"] = d["musicSelected"].toBool() ? f["discAngle"].toDouble() : 0;
             part["name"] = "Music_Disc_Print";
             part["mesh"] = -2;
             result << part;
@@ -549,14 +564,17 @@ class Renderer {
         if (!covers.contains(key) || (!image.isNull() && coverRevisions.value(key) != coverRevision)) {
             releaseCover(key);
             if (!coverTextures.contains(coverRevision)) {
-                QImage pixels(512, 512, QImage::Format_RGBA8888_Premultiplied);
+                // 高分辨率封面直接进入贴图
+                const auto coverSize = image.isNull() ? 512 : std::clamp(image.width(), 512, 1024);
+                QImage pixels(coverSize, coverSize, QImage::Format_RGBA8888_Premultiplied);
                 pixels.fill(QColor::fromRgbF(.36, .45, .45));
                 QPainter painter(&pixels);
                 painter.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
                 if (!image.isNull()) {
-                    const auto dimensions = image.size().scaled(512, 512, Qt::KeepAspectRatioByExpanding);
-                    painter.drawImage(QRectF((512 - dimensions.width()) / 2.,
-                                             (512 - dimensions.height()) / 2., dimensions.width(),
+                    const auto dimensions =
+                        image.size().scaled(coverSize, coverSize, Qt::KeepAspectRatioByExpanding);
+                    painter.drawImage(QRectF((coverSize - dimensions.width()) / 2.,
+                                             (coverSize - dimensions.height()) / 2., dimensions.width(),
                                              dimensions.height()),
                                       image);
                 } else {
@@ -1232,6 +1250,8 @@ QImage renderReference(const QString &root, const QJsonObject &frame, const QJso
         qWarning() << "Reference render skipped, missing resources:" << gaps.join(", ");
         return {};
     }
+    // 离屏表面先声明，析构顺序才能晚于 QRhi：GL 后端在析构时会切回上下文。
+    std::unique_ptr<QOffscreenSurface> surface;
     std::unique_ptr<QRhi> rhi;
 #ifdef Q_OS_MACOS
     QRhiMetalInitParams params;
@@ -1243,8 +1263,16 @@ QImage renderReference(const QString &root, const QJsonObject &frame, const QJso
                                ? QRhi::PreferSoftwareRenderer
                                : QRhi::Flags{}));
 #else
-    std::unique_ptr<QOffscreenSurface> surface(QRhiGles2InitParams::newFallbackSurface());
+    // 着色器按 GLSL 150 打包（GL 3.2 核心档）；默认格式会退到 2.1 并找不到可用版本。
+    QSurfaceFormat format;
+    format.setRenderableType(QSurfaceFormat::OpenGL);
+    format.setVersion(3, 3);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setDepthBufferSize(24);
+    format.setStencilBufferSize(8);
+    surface.reset(QRhiGles2InitParams::newFallbackSurface(format));
     QRhiGles2InitParams params;
+    params.format = format;
     params.fallbackSurface = surface.get();
     rhi.reset(QRhi::create(QRhi::OpenGLES2, &params));
 #endif

@@ -21,6 +21,7 @@ Engine::Engine(QString path, bool offline, QObject *parent)
     : QObject(parent), host(path, offline), scene(path), m_glyphs(path) {
     const auto content = QJsonDocument::fromJson(host.read("slots.json").toUtf8()).object();
     app = std::make_unique<NativeApplication>(&host, &m_glyphs, &scene, content);
+    connect(&app->music, &MusicLibrary::playbackInvalidated, this, &Engine::refreshPlayback);
     app->initialize();
     connect(&host, &Host::invalidated, this, [this] { wake(false); });
     connect(&host, &Host::mediaChanged, this, &Engine::pollMedia, Qt::QueuedConnection);
@@ -138,12 +139,38 @@ QVariantMap Engine::performance() const {
             {"sceneUpdates", qulonglong(m_sceneUpdates)},
             {"hudUpdates", qulonglong(m_hudUpdates)},
             {"renderFrames", qulonglong(m_renderFrames.load(std::memory_order_relaxed))},
-            {"gpuResources", qulonglong(m_gpuResources.load(std::memory_order_relaxed))},
+            {"gpuResources", qulonglong(m_gpuResources.load(std::memory_order_relaxed) +
+                                        m_opticalGpuResources.load(std::memory_order_relaxed))},
             {"bindingCreations", qulonglong(m_bindingCreations.load(std::memory_order_relaxed))},
-            {"gpuMusicTextureBytes", qulonglong(m_musicTextureBytes.load(std::memory_order_relaxed))},
+            {"gpuMusicTextureBytes", qulonglong(m_musicTextureBytes.load(std::memory_order_relaxed) +
+                                                m_opticalTextureBytes.load(std::memory_order_relaxed))},
             {"coverUploads", qulonglong(m_coverUploads.load(std::memory_order_relaxed))},
             {"gpuDrawCalls", qulonglong(m_lastDrawCalls.load(std::memory_order_relaxed))},
             {"timerActive", timer.isActive()}};
+}
+/**
+ * 只唤醒当前选用的渲染分支
+ */
+void Engine::notifySceneRenderers(bool visualChanged) {
+    const bool enhanced = app->hud.sceneEnhancement;
+    if (enhanced) {
+        m_originalSceneDirty |= visualChanged;
+        // 进入资料库时预热一次原版管线，避免抽取末尾才同步编译和分配整套资源。
+        const bool prewarm = !m_originalSceneWarm && m_frame["mode"] != "boot";
+        if ((prewarm || m_frame["originalActorBlend"].toDouble() > 0) && m_originalSceneDirty) {
+            m_originalSceneDirty = false;
+            m_originalSceneWarm = true;
+            emit sceneUpdated();
+        }
+        if (visualChanged || !m_sceneEnhancement) {
+            emit opticalSceneUpdated();
+        }
+    } else if (visualChanged || (m_sceneEnhancement && m_originalSceneDirty)) {
+        m_originalSceneDirty = false;
+        m_originalSceneWarm = true;
+        emit sceneUpdated();
+    }
+    m_sceneEnhancement = enhanced;
 }
 void Engine::wake(bool input) {
     const bool wasSleeping = m_sleeping;
@@ -182,8 +209,9 @@ void Engine::setVisible(bool value) {
         m_sleeping = true;
     } else {
         host.restoreMemoryBudget();
+        m_originalSceneWarm = false;
         wake(false);
-        emit sceneUpdated();
+        notifySceneRenderers(true);
         emit hudUpdated();
     }
     emit stateChanged();
@@ -205,6 +233,21 @@ void Engine::trimMemory() {
     host.trimMemory(retainedImages);
     scene.trimMemory();
 }
+/** 播放栏按需重绘时保持资源库休眠；只有可见的旋转或歌词动画需要连续调度。 */
+void Engine::refreshPlayback() {
+    if (!m_visible) {
+        return;
+    }
+    if (!m_sleeping || !m_sceneSleeping || scene.changed()) {
+        wake(false);
+        return;
+    }
+    step(m_animationTime);
+    if (m_discRotating || app->hud.animating(m_animationTime)) {
+        wake(false);
+    }
+}
+
 void Engine::pollMedia() {
     app->poll(clock.elapsed() / 1000.0, true);
     const auto &player = app->music.player;
@@ -244,8 +287,13 @@ void Engine::tick() {
         scene.energyIdle(true);
     }
     step(m_animationTime);
+    // 只有盘面在运动时以 30Hz 刷新；交互和原有动画仍使用原频率。
+    timer.setInterval(m_discRotating && m_sceneSleeping && !app->hud.animating(m_animationTime) &&
+                              now - m_lastInput >= 750 && !m_pressed
+                          ? 33
+                          : 16);
     if (now - m_lastInput >= 750 && !m_pressed && m_sceneSleeping && !scene.changed() &&
-        !app->hud.animating(m_animationTime) && m_frame["mode"] != "boot") {
+        !app->hud.animating(m_animationTime) && !m_discRotating && m_frame["mode"] != "boot") {
         timer.stop();
         m_sleeping = true;
         emit stateChanged();
@@ -261,6 +309,10 @@ void Engine::resize(double width, double height) {
     wake();
 }
 void Engine::action(QString value) {
+    if (value == "performance:toggle") {
+        emit performanceRequested();
+        return;
+    }
     // 窗口模式由 Qt 原生窗口处理，不进入音乐状态或场景动画。
     if (value == "window:fullscreen") {
         toggleFullscreen();
@@ -329,6 +381,9 @@ bool Engine::keyEvent(int keyCode, int modifiers, QString text) {
         break;
     case Qt::Key_Escape:
         text = "Escape";
+        break;
+    case Qt::Key_Tab:
+        text = "Tab";
         break;
     default:
         break;
@@ -416,9 +471,11 @@ void Engine::step(double time) {
     if (object.isEmpty()) {
         return;
     }
+    const auto previousDiscAngle = m_frame["discAngle"].toDouble();
     m_frame = scene.frame;
+    m_frame["originalActorBlend"] = scene.originalActorBlend();
     auto signature = m_frame;
-    for (const auto &key : {"time", "stats", "labels", "boot", "pointerCursor"}) {
+    for (const auto &key : {"time", "stats", "labels", "boot", "pointerCursor", "originalActorBlend"}) {
         signature.remove(key);
     }
     bool stable =
@@ -428,6 +485,9 @@ void Engine::step(double time) {
         stable = equivalent(it->matrices, old.matrices) && equivalent(it->themes, old.themes);
     }
     m_stableFrames = stable ? m_stableFrames + 1 : 0;
+    if (!stable) {
+        ++m_geometryRevision;
+    }
     if (!stable || scene.changed()) {
         m_sceneSleeping = false;
     }
@@ -440,8 +500,29 @@ void Engine::step(double time) {
     const auto current = object["current"].toObject();
     const auto cover = object["cover"].toString();
     const auto coverRevision = host.image(cover).cacheKey();
-    const bool visualChanged =
-        !stable || current != m_current || cover != m_cover || coverRevision != m_coverRevision;
+    const auto &player = app->music.player;
+    const auto identity = MusicPlayer::identity(player.current);
+    if (identity != m_discIdentity) {
+        m_discIdentity = identity;
+        m_discAngle = 0;
+    }
+    const bool wasRotating = m_discRotating;
+    m_discRotating = m_visible && app->hud.discRotation && !app->hud.reduced && app->hud.modal.isEmpty() &&
+                     m_frame["mode"] == "detail" && !m_frame["viewer"].toBool() &&
+                     current["kind"] == "song" && MusicPlayer::identity(current) == identity &&
+                     !player.loading && !player.failed && player.state["playing"].toBool();
+    if (wasRotating && m_discRotating) {
+        // 20 秒一圈；接续可见视觉时钟，暂停或隐藏期间不补转。
+        m_discAngle = std::fmod(m_discAngle + std::clamp(time - m_discTime, 0., .05) *
+                                                  (2 * 3.14159265358979323846 / 20),
+                                2 * 3.14159265358979323846);
+    }
+    m_discTime = time;
+    const bool showDiscAngle = current["kind"] == "song" && MusicPlayer::identity(current) == identity;
+    m_frame["discAngle"] = showDiscAngle ? m_discAngle : 0;
+    const bool discChanged = m_discRotating || previousDiscAngle != m_frame["discAngle"].toDouble();
+    const bool visualChanged = discChanged || !stable || current != m_current || cover != m_cover ||
+                               coverRevision != m_coverRevision;
     m_coverRevision = coverRevision;
     m_current = current;
     m_cover = object["cover"].toString();
@@ -473,9 +554,10 @@ void Engine::step(double time) {
     }
     if (visualChanged) {
         ++m_sceneUpdates;
-        emit sceneUpdated();
     }
+    notifySceneRenderers(visualChanged);
     auto state = object["state"].toObject().toVariantMap();
+    state["originalActorVisible"] = m_frame["originalActorBlend"].toDouble() > 0;
     if (state != m_state) {
         m_state = state;
         const auto loginMethod = m_state.value("loginMethod").toString();

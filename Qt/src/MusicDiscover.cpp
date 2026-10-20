@@ -29,7 +29,7 @@ void MusicDiscover::load(QString nextTab, bool append) {
         items = {};
     }
     m_store->changed();
-    if (tab == "daily" && m_store->provider != "qq" && m_store->uid.isEmpty()) {
+    if ((tab == "daily" || tab == "guess") && m_store->uid.isEmpty()) {
         accept({{}, QStringLiteral("登录后查看每日推荐"), {}}, tab, start, append);
         return;
     }
@@ -51,7 +51,7 @@ void MusicDiscover::load(QString nextTab, bool append) {
     const auto currentTab = tab;
     if (m_store->provider != "netease") {
         m_store->api.call(
-            "discover", {tab, start, category},
+            "discover", {tab, start, tab == "new-songs" ? newSongArea : category},
             [this, currentTab, start, append](MusicReply result) {
                 accept(result, currentTab, start, append);
             },
@@ -126,6 +126,13 @@ void MusicDiscover::accept(MusicReply result, QString currentTab, int start, boo
         status = result.error;
     } else {
         const auto page = result.value.toObject();
+        if (currentTab == "categories" && m_store->provider == "qq" && page["category"].isString()) {
+            category = page["category"].toString();
+        }
+        if (currentTab == "new-songs") {
+            newSongAreas = page["areas"].toArray();
+            newSongArea = QString::number(page["area"].toInt(5));
+        }
         items = append ? MusicData::unique(items, page["items"].toArray()) : page["items"].toArray();
         offset = start + page["rawCount"].toInt();
         if (currentTab == "artists") {
@@ -180,6 +187,8 @@ void MusicDiscover::cancel() {
     more = false;
     offset = 0;
     categories = {};
+    newSongAreas = {};
+    newSongArea = "5";
     category = QStringLiteral("全部");
     tab = "playlists";
 }

@@ -79,6 +79,16 @@ export class API {
         if (!track?.url) {
             throw new Error('此歌曲暂无可用音源，请登录或在网易云打开');
         }
+        // 上游替代音源分支会直接回填请求档位和 flac，不能作为实际音质依据。
+        if (
+            alternative &&
+            String(responseBody.msg || '').startsWith('Warning: Customizing unblock sources')
+        ) {
+            const matchedTrack = { ...track };
+            delete matchedTrack.level;
+            delete matchedTrack.type;
+            return matchedTrack;
+        }
         return track;
     }
 
