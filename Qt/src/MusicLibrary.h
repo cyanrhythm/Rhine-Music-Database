@@ -1,5 +1,6 @@
 #pragma once
 #include "MusicPlayer.h"
+#include "LocalMusicLibrary.h"
 #include <QHash>
 #include <QSet>
 #include <array>
@@ -32,6 +33,13 @@ class MusicLibrary : public QObject {
     MusicLibrary(Host *host, const QJsonObject &content, QObject *parent = nullptr);
     ~MusicLibrary() override;
     void changed();
+    bool isLocal() const {
+        return provider == "local";
+    }
+    void refreshLocal();
+    void searchLocal(QString text, QString kind = {});
+    void importLocal(const QStringList &paths);
+    std::unique_ptr<LocalMusicLibrary> local;
     void observe(int selected);
     void choose(QJsonObject value, bool containerDetails = false,
                 std::optional<bool> showDetails = std::nullopt);

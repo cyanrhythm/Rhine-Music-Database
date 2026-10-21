@@ -12,7 +12,8 @@ struct Provider {
 const QVector<Provider> providers{
     {"netease", "网易云音乐", "NETEASE", "搜索 · 个人音乐 · 推荐 · 播放 · 歌单编辑"},
     {"qq", "QQ 音乐", "QQ MUSIC", "全类搜索 · 每日推荐 · 个人音乐 · 歌单编辑"},
-    {"kugou", "酷狗音乐", "KUGOU", "标准版 / 概念版 · 个人歌单 · 推荐与榜单 · 播放"}};
+    {"kugou", "酷狗音乐", "KUGOU", "标准版 / 概念版 · 个人歌单 · 推荐与榜单 · 播放"},
+    {"local", "本地音乐", "LOCAL", "文件夹管理 · 导入与索引 · 本地检索 · 播放"}};
 
 QString modalTitle(const QString &modal, const MusicLibrary &music) {
     static const QHash<QString, QString> titles{{"provider", "MUSIC PLATFORM"},
@@ -25,6 +26,9 @@ QString modalTitle(const QString &modal, const MusicLibrary &music) {
                                                 {"playlist-form", "PLAYLIST EDITOR"},
                                                 {"playlist-picker", "PLAYLIST DIRECTORY"},
                                                 {"confirm", "CONFIRM DELETE"}};
+    if (modal == "local") {
+        return "LOCAL MUSIC LIBRARY";
+    }
     if (modal == "login") {
         if (music.provider == "qq") {
             return "QQ MUSIC LOGIN";
@@ -46,6 +50,12 @@ QString modalSubtitle(const QString &modal, const MusicLibrary &music) {
                                                    {"playlist-form", "编辑我的歌单"},
                                                    {"playlist-picker", "添加到我的歌单"},
                                                    {"confirm", "删除确认"}};
+    if (modal == "local") {
+        return "文件夹管理 / 导入与索引";
+    }
+    if (modal == "search" && music.isLocal()) {
+        return "本地音乐检索 / 仅搜索已导入的索引";
+    }
     if (modal == "saved") {
         return "我的音乐 / " + music.nickname;
     }
@@ -62,6 +72,26 @@ void NativeHud::modalDraw(double width) {
     auto &music = *m_music;
     save();
     alpha(motion.opacity);
+    if (modal == "lyrics-source") {
+        const auto bounds = modalBounds(width);
+        translate(0, motion.offset);
+        fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(),
+             dark ? QJsonArray{0.15, 0.15, 0.15, 1, "calibratedWhite"} : QJsonArray{0.929, 0.922, 0.894, 1});
+        hits = {};
+        m_modalControls = true;
+        const QStringList sources{"auto", "local", "netease", "qq", "kugou"};
+        const QStringList labels{"自动（本地优先）", "本地歌词", "网易云音乐", "QQ 音乐", "酷狗音乐"};
+        for (int index = 0; index < sources.size(); ++index) {
+            const auto label =
+                (music.player.lyrics.localSource == sources[index] ? QStringLiteral("✓ ") : QString()) +
+                labels[index];
+            button(label, bounds.x() + 10, bounds.y() + 11 + index * 42, bounds.width() - 20, 42,
+                   "player:lyrics-source:" + sources[index], 15);
+        }
+        m_modalControls = false;
+        restore();
+        return;
+    }
     const bool search = modal == "search";
     fill(0, 0, width, 1080,
          dark ? QJsonArray{17.0 / 255, 24.0 / 255, 27.0 / 255, search ? 0.15 : 0.6}
@@ -100,7 +130,9 @@ void NativeHud::modalDraw(double width) {
         platformPanel(x, y, usable);
     } else if (modal == "confirm") {
         limited(confirmTitle, x + 53, y + 260, 24, usable - 106, "demibold");
-        text("此操作将同步至" + music.providerName() + "。", x + 53, y + 330, 16);
+        text(music.isLocal() ? "只移除本地索引，磁盘音乐文件保持原样。"
+                             : "此操作将同步至" + music.providerName() + "。",
+             x + 53, y + 330, 16);
         button("确认删除", x + 53, y + 450, 180, 45, "confirm:yes", 16);
         button("取消", x + 270, y + 450, 150, 45, "close-modal", 16);
     } else if (modal == "playlist-picker") {
@@ -125,6 +157,8 @@ void NativeHud::modalDraw(double width) {
         text(formKind == "create" ? "歌单名称" : "新歌单名称", x + 53, y + 240, 15);
         text(music.provider == "qq" ? "1–20 字 / 按 ENTER 提交" : "按 ENTER 提交", x + 53, y + 420, 12);
         limited(music.status, x + 53, y + 775, 12, usable - 106);
+    } else if (modal == "local") {
+        localPanel(x, y, usable);
     } else if (modal == "discover") {
         discoverPanel(x, y, usable);
     } else if (modal == "player") {
@@ -142,7 +176,7 @@ void NativeHud::modalDraw(double width) {
 
 void NativeHud::platformChoices(double x, double y, double width, bool expanded) {
     constexpr double gap = 12;
-    const auto cardWidth = (width - gap * 2) / 3;
+    const auto cardWidth = (width - gap * (providers.size() - 1)) / providers.size();
     for (int index = 0; index < providers.size(); ++index) {
         const auto &provider = providers.at(index);
         const auto left = x + index * (cardWidth + gap);
@@ -163,7 +197,11 @@ void NativeHud::platformChoices(double x, double y, double width, bool expanded)
                 text(lines.at(row), left + 16, y + 75 + row * 21, 14);
             }
             const bool authenticated = m_host->hasCredential(provider.id);
-            text(authenticated ? "本机已保存登录" : "未登录 / 可选择后扫码", left + 16, y + 150, 12);
+            const auto note = provider.id == "local"
+                                  ? QStringLiteral("独立本地库 / 无需登录")
+                                  : (authenticated ? QStringLiteral("本机已保存登录")
+                                                   : QStringLiteral("未登录 / 可选择后扫码"));
+            limited(note, left + 16, y + 150, 12, cardWidth - 32);
         }
     }
 }
@@ -173,7 +211,11 @@ void NativeHud::platformPanel(double x, double y, double width) {
     rule(x + 53, y + 490, width - 106, 0.2);
     text("切换平台会停止当前播放，各平台账号与个人音乐独立保存。", x + 53, y + 520, 15);
     text("网易云与 QQ 支持歌单编辑；酷狗支持读取与播放。", x + 53, y + 558, 15);
-    button("账号登录 / " + m_music->providerName(), x + 53, y + 660, 330, 48, "music:login", 16);
+    if (m_music->isLocal()) {
+        button("文件夹管理 ＋", x + 53, y + 660, 330, 48, "discover", 16);
+    } else {
+        button("账号登录 / " + m_music->providerName(), x + 53, y + 660, 330, 48, "music:login", 16);
+    }
 }
 namespace {
 struct QualityDescription {
@@ -327,8 +369,12 @@ void NativeHud::settings(double x, double y, double width) {
     fill(left, y + 210, usable, 66, tint);
     text("当前平台 / " + music.providerName(), left + 12, y + 233, 17, "demibold");
     button("切换平台 ▾", left + usable - 235, y + 225, 225, 36, "provider", 13);
-    button(music.uid.isEmpty() ? "登录 / " + music.providerName() : "退出登录 / " + music.nickname, left,
-           y + 290, 340, 38, music.uid.isEmpty() ? "music:login" : "music:logout", 13);
+    if (music.isLocal()) {
+        button("文件夹管理 / 导入与索引", left, y + 290, 340, 38, "discover", 13);
+    } else {
+        button(music.uid.isEmpty() ? "登录 / " + music.providerName() : "退出登录 / " + music.nickname, left,
+               y + 290, 340, 38, music.uid.isEmpty() ? "music:login" : "music:logout", 13);
+    }
     const QHash<QString, QString> memberships{
         {"free", "免费账号"}, {"green", "绿钻会员"}, {"super", "超级会员"}, {"unknown", "会员状态未知"}};
     const auto accountNote = music.provider == "qq" && !music.uid.isEmpty()
@@ -351,8 +397,12 @@ void NativeHud::settings(double x, double y, double width) {
         rows.append({"ALTERNATE SOURCE / 替代音源",
                      music.player.alternative ? "开启（音质由来源决定）" : "关闭", "alternative"});
     }
-    rows.append({"OFFICIAL PLAYER / 官方窗口", m_host->activates() ? "播放时显示" : "尽量保持后台",
-                 "music:activate"});
+    if (music.isLocal()) {
+        rows.removeLast();
+    } else {
+        rows.append({"OFFICIAL PLAYER / 官方窗口", m_host->activates() ? "播放时显示" : "尽量保持后台",
+                     "music:activate"});
+    }
     for (int index = 0; index < rows.size(); ++index) {
         const auto &row = rows.at(index);
         const auto yy = y + 377 + index * 50;

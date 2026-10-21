@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import QtQuick.Dialogs
 import Rhine.Native 1.0
 
 Window {
@@ -9,9 +10,34 @@ Window {
     minimumWidth: 960
     minimumHeight: 540
     visible: true
-    flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint | Qt.WindowFullscreenButtonHint
+    property bool windowsFrameless: Qt.platform.os === "windows"
+    flags: (windowsFrameless ? Qt.FramelessWindowHint : 0) | Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint | Qt.WindowFullscreenButtonHint
     title: "RHINE MUSIC DATABASE"
     color: "#e7e7e1"
+    FolderDialog {
+        id: localFolderDialog
+        objectName: "localMusicFolderDialog"
+        title: "导入本地音乐文件夹"
+        onAccepted: rhine.importLocal([selectedFolder])
+    }
+    FileDialog {
+        id: localFileDialog
+        objectName: "localMusicFileDialog"
+        title: "导入本地音乐文件"
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["音乐文件 (*.mp3 *.flac *.m4a *.mp4 *.aac *.ogg *.opus *.ape *.wav *.aiff *.aif *.wv *.wma *.mpc)"]
+        onAccepted: rhine.importLocal(selectedFiles)
+    }
+    Connections {
+        target: rhine
+        function onLocalImportRequested(folder: bool) {
+            if (folder) {
+                localFolderDialog.open();
+            } else {
+                localFileDialog.open();
+            }
+        }
+    }
     property real stageScale: height / 1080
     property real stageWidth: width / stageScale
     onVisibilityChanged: function (visibility) {
@@ -270,7 +296,7 @@ Window {
         clip: true
         cursorVisible: activeFocus && !rhine.performance.idle
         selectByMouse: true
-        Accessible.name: "搜索歌曲、歌手、专辑或歌单"
+        Accessible.name: rhine.state.localMusic ? "检索本地歌曲、歌手、专辑或文件夹" : "搜索歌曲、歌手、专辑或歌单"
         onTextEdited: rhine.query(text)
         onVisibleChanged: {
             if (visible) {
@@ -287,7 +313,7 @@ Window {
         Text {
             anchors.fill: parent
             visible: searchInput.text.length === 0 && !searchInput.preeditText
-            text: "搜索歌曲、歌手、专辑或歌单"
+            text: rhine.state.localMusic ? "检索本地歌曲、歌手、专辑或文件夹" : "搜索歌曲、歌手、专辑或歌单"
             font: searchInput.font
             leftPadding: searchInput.leftPadding
             verticalAlignment: Text.AlignVCenter
@@ -297,6 +323,13 @@ Window {
     Shortcut {
         sequence: "F10"
         onActivated: profiler.toggleVisible()
+    }
+    WindowChrome {
+        window: root
+        enabled: root.windowsFrameless
+        visible: enabled && root.visibility !== Window.FullScreen
+        dark: rhine.state.dark === true
+        z: 999
     }
     PerformancePanel {
         z: 1000

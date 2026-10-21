@@ -72,6 +72,9 @@ void MusicLibrary::rememberIdentityName(QString source, QString name) {
 }
 
 void MusicLibrary::restoreIdentityName() {
+    if (isLocal()) {
+        return;
+    }
     const auto source = provider == "netease" ? "qq" : "netease";
     if (!identityNames.value(source).isEmpty() || !host->hasCredential(source)) {
         return;
@@ -89,6 +92,11 @@ void MusicLibrary::restoreIdentityName() {
 }
 
 void MusicLibrary::restoreCachedAccount() {
+    if (isLocal()) {
+        uid.clear();
+        nickname = QStringLiteral("本地音乐");
+        return;
+    }
     const auto authenticated = host->authenticated();
     uid = authenticated ? host->preference("account-id-" + accountKey()) : QString();
     nickname = authenticated ? identityNames.value(provider) : QStringLiteral("未登录");
@@ -124,6 +132,12 @@ void MusicLibrary::refreshQQFeatures() {
 }
 
 void MusicLibrary::restoreAccount(Completion done) {
+    if (isLocal()) {
+        if (done) {
+            done(true);
+        }
+        return;
+    }
     refreshQQFeatures();
     if (!host->authenticated()) {
         if (done) {
@@ -170,7 +184,8 @@ void MusicLibrary::restoreAccount(Completion done) {
 void MusicLibrary::switchProvider(QString source, QString edition, Completion done) {
     const auto editionChanged =
         source == "kugou" && QStringList{"standard", "lite"}.contains(edition) && edition != kugouEdition;
-    if (!QStringList{"netease", "qq", "kugou"}.contains(source) || (source == provider && !editionChanged)) {
+    if (!QStringList{"netease", "qq", "kugou", "local"}.contains(source) ||
+        (source == provider && !editionChanged)) {
         if (done) {
             done(true);
         }
@@ -185,6 +200,7 @@ void MusicLibrary::switchProvider(QString source, QString edition, Completion do
     ++m_suggestGeneration;
     discover->cancel();
     player.stop();
+    local->cancel();
     emit musicClearRequested();
     provider = source;
     if (editionChanged) {
@@ -242,6 +258,11 @@ void MusicLibrary::switchProvider(QString source, QString edition, Completion do
     selectedLane = 0;
     privateSelection = false;
     loginMethod = "qr";
+    if (isLocal()) {
+        refreshLocal();
+    } else {
+        columns = {"搜索结果", "喜欢的歌曲", "我的歌单", "收藏歌单", "收藏专辑"};
+    }
     status = QStringLiteral("已切换至") + providerName();
     changed();
     restoreAccount(done);
@@ -330,6 +351,9 @@ void MusicLibrary::cancelLogin(Completion done) {
 }
 
 void MusicLibrary::passwordLogin(QString method, QString account, QString password) {
+    if (isLocal()) {
+        return;
+    }
     if (accountLoading && loginMethod == method) {
         return;
     }
@@ -418,6 +442,9 @@ void MusicLibrary::confirmLogin(quint64 token, bool password) {
 }
 
 void MusicLibrary::startLogin() {
+    if (isLocal()) {
+        return;
+    }
     if (!canRegenerateLogin()) {
         const auto seconds = loginRetrySeconds();
         if (seconds > 0) {
@@ -560,6 +587,9 @@ void MusicLibrary::pollQR(quint64 token, int count) {
 
 /** 退出只清理当前来源凭据与私有资料，并撤销该账号的全部异步更新。 */
 void MusicLibrary::logout() {
+    if (isLocal()) {
+        return;
+    }
     const auto clearSelection = selectedLane > 0 || privateSelection;
     writeLoading = false;
     subscriptions.clear();

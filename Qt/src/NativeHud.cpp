@@ -133,6 +133,10 @@ void NativeHud::art(QString key, double x, double y, double size, int count, dou
 }
 
 QRectF NativeHud::modalBounds(double width) const {
+    if (modal == "lyrics-source") {
+        // 列表右缘与底部来源按钮对齐，向上展开并保留 8 px 间距。
+        return {width - 428, 674, 232, 232};
+    }
     double modalWidth = std::min(1260.0, width - 100);
     if (modal == "search") {
         modalWidth = std::min(width - 100, std::max(760.0, std::min(1000.0, width * 0.5 - 59)));
@@ -170,6 +174,7 @@ QJsonObject NativeHud::state() const {
             {"seek", rect(playerSeekRect)},
             {"volume", rect(playerVolumeRect)},
             {"loginMethod", m_music->loginMethod},
+            {"localMusic", m_music->isLocal()},
             {"formKind", formKind},
             {"formPID", formPID},
             {"modal", modal},
@@ -248,14 +253,18 @@ void NativeHud::brandLine(int index) {
 }
 void NativeHud::navigation(double width) {
     const auto x = width - 579;
-    control("发现音乐 ↗", x - 210, 118, 184, "discover");
+    if (m_music->isLocal()) {
+        control("文件夹管理 ＋", x - 210, 118, 184, "discover");
+    } else {
+        control("发现音乐 ↗", x - 210, 118, 184, "discover");
+    }
     control("音乐检索  /", x, 118, 184, "search");
-    control("＋ 我的音乐", x + 200, 118, 184, "saved");
+    control(m_music->isLocal() ? "本地曲库" : "＋ 我的音乐", x + 200, 118, 184, "saved");
     control(m_host->updater.available() ? "设置 · 更新" : "设置", x + 400, 118, 120, "settings");
 }
 void NativeHud::footer(double width) {
     fill(59, 971, 5, 5, {119.0 / 255, 123.0 / 255, 96.0 / 255, 1});
-    QString session = "GUEST SESSION";
+    QString session = m_music->isLocal() ? "LOCAL LIBRARY" : "GUEST SESSION";
     if (!m_music->uid.isEmpty()) {
         session = "NETEASE SESSION";
         if (m_music->provider == "qq") {
@@ -287,7 +296,7 @@ void NativeHud::empty(double width) {
         title = music.sourceLoading() ? QStringLiteral("正在同步音乐资料…") : music.libraryName();
         label = "查看我的音乐 →";
         action = "saved";
-        if (music.uid.isEmpty() && !music.restoringAccount) {
+        if (!music.isLocal() && music.uid.isEmpty() && !music.restoringAccount) {
             title = "登录后查看";
             label = "登录" + music.providerName() + " →";
             action = "music:login";

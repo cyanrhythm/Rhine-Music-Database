@@ -155,6 +155,17 @@ function loadClient(name, request) {
  * 沿用锁定上游的协议与错误语义，响应 Cookie 交给父进程隔离处理。
  */
 async function dispatch(message) {
+    if (message.route === '/local/lyrics') {
+        const content = message.params?.content;
+        if (typeof content !== 'string' || content.length > 1000000) {
+            return { body: { code: 400, message: '本地歌词内容无效' }, cookies: [] };
+        }
+        const result = require('./lyrics-format.cjs').normalizeLyrics('netease', { lrc: { lyric: content } });
+        if (result.document) {
+            result.document.source = 'local';
+        }
+        return { body: result, cookies: [] };
+    }
     if (message.route?.startsWith('/native/')) {
         const client = await import('./client/dispatch.mjs');
         return client.dispatch(message, dispatch);

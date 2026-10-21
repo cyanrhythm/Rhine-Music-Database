@@ -124,8 +124,10 @@ void NativeHud::playerPanel(double x, double y, double width) {
     static const QHash<QString, QString> modes{
         {"off", "顺序播放"}, {"all", "列表循环"}, {"one", "单曲循环"}, {"shuffle", "随机播放"}};
     button(modes.value(player.mode), left, y + 761, 140, 44, "player:mode", 16);
-    button(m_music->provider != "netease" ? m_music->providerName() + " ↗" : "官方客户端 ↗", left + 165,
-           y + 761, 175, 44, "player:official", 16);
+    if (!m_music->isLocal()) {
+        button(m_music->provider != "netease" ? m_music->providerName() + " ↗" : "官方客户端 ↗", left + 165,
+               y + 761, 175, 44, "player:official", 16);
+    }
     if (m_music->canMutate("/like")) {
         button(m_music->provider == "qq" ? "红心 / 切换" : "♡ 喜欢此曲", left + 365, y + 761, 140, 44,
                "music:like-current", 16);

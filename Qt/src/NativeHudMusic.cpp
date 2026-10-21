@@ -18,6 +18,13 @@ void NativeHud::musicAction(const QStringList &parts, const QString &value) {
     auto &music = *m_music;
     const auto name = parts.value(1);
     const auto last = parts.constLast().toInt();
+    if (music.isLocal() &&
+        QStringList{"login", "logout", "qr", "login-method", "kugou-edition", "like", "like-current",
+                    "subscribe", "create-playlist", "delete-playlist", "rename-playlist", "add-to-playlist",
+                    "playlist-pick", "official", "source", "refresh-personal", "activate", "remove-track"}
+            .contains(name)) {
+        return;
+    }
     if (name == "slot") {
         const auto directory = music.directory;
         if (directory && !directory->songs.isEmpty()) {

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { resourceDirectory, executable } = require('./app-layout.cjs');
 const mac = process.platform === 'darwin';
 const win = process.platform === 'win32';
 const linux = process.platform === 'linux';
@@ -12,13 +13,6 @@ if (!mac && !linux && !win) {
 }
 const platforms = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
 const platform = platforms[process.platform];
-// 部署布局：macOS 在 bundle 内，Linux 与程序同目录，Windows 在其下一级。
-const layouts = {
-    darwin: ['Contents/Resources', 'Contents/MacOS/RhineMusicDatabase'],
-    linux: ['usr/bin/resources', 'usr/bin/RhineMusicDatabase'],
-    win32: ['resources', 'RHINE MUSIC DATABASE.exe'],
-};
-const [resourceDirectory, executable] = layouts[process.platform];
 const app = path.resolve(process.argv[2]);
 const resources = path.join(app, resourceDirectory);
 assert(

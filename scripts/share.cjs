@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { buildVersion } = require('./release-version.cjs');
+const { app } = require('./app-layout.cjs');
 const { spawnSync } = require('node:child_process');
 process.chdir(path.resolve(__dirname, '..'));
 const mac = process.platform === 'darwin';
@@ -9,13 +10,6 @@ const win = process.platform === 'win32';
 const linux = process.platform === 'linux';
 // 统一使用 python3：多数发行版不再提供 python 命令。
 const python = process.env.PYTHON || (win ? 'python' : 'python3');
-// 与构建脚本保持同一份部署目录；Linux 交付 AppImage 前缀目录。
-const appPaths = {
-    darwin: 'output/RHINE MUSIC DATABASE.app',
-    linux: 'output/RhineMusicDatabase.AppDir',
-    win32: 'output/windows/RHINE MUSIC DATABASE',
-};
-const app = appPaths[process.platform];
 if (!fs.existsSync(app)) {
     throw Error('Run npm run build first');
 }

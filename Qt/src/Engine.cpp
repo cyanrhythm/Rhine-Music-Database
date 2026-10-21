@@ -22,6 +22,7 @@ Engine::Engine(QString path, bool offline, QObject *parent)
     const auto content = QJsonDocument::fromJson(host.read("slots.json").toUtf8()).object();
     app = std::make_unique<NativeApplication>(&host, &m_glyphs, &scene, content);
     connect(&app->music, &MusicLibrary::playbackInvalidated, this, &Engine::refreshPlayback);
+    connect(&app->hud, &NativeHud::localImportRequested, this, &Engine::localImportRequested);
     app->initialize();
     connect(&host, &Host::invalidated, this, [this] { wake(false); });
     connect(&host, &Host::mediaChanged, this, &Engine::pollMedia, Qt::QueuedConnection);
@@ -690,4 +691,15 @@ int Engine::renderFixtures(QString source, QString output) {
         }
     }
     return failure.isEmpty() ? 0 : 1;
+}
+
+void Engine::importLocal(QList<QUrl> urls) {
+    QStringList paths;
+    for (const auto &url : urls) {
+        if (url.isLocalFile()) {
+            paths.append(url.toLocalFile());
+        }
+    }
+    app->music.importLocal(paths);
+    wake();
 }

@@ -92,8 +92,7 @@ function filter(file) {
     const parts = path.relative(bridge, file).split(path.sep);
     return (
         !parts.some((p) => excludedDirs.has(p) || p === '.DS_Store') &&
-        !/\.(?:map|d\.ts|tsbuildinfo)$/.test(file) &&
-        !/^(?:readme|agents|readability-plan)(?:\.|$)/i.test(path.basename(file))
+        !/\.(?:map|d\.ts|tsbuildinfo)$/.test(file)
     );
 }
 
@@ -134,19 +133,6 @@ for (const name of ['@neteasecloudmusicapienhanced/api', '@yakult-green-tea/qq-m
     copyPackage(name, bridge);
 }
 fs.copyFileSync('NOTICE', path.join(out, 'NOTICE'));
-const readme = fs.readFileSync('README.md', 'utf8');
-fs.writeFileSync(path.join(out, 'README.md'), readme);
-// 随包 README 使用同一组已审核的访客截图。
-const previews = path.join(out, 'Assets/previews');
-fs.mkdirSync(previews, {
-    recursive: true,
-});
-const previewNames = [...readme.matchAll(/!\[[^\]]*\]\(Assets\/previews\/([A-Za-z0-9_-]+\.png)\)/g)].map(
-    (match) => match[1],
-);
-for (const name of new Set(previewNames)) {
-    fs.copyFileSync(path.join('Assets/previews', name), path.join(previews, name));
-}
 // 许可证原样复制，不转换字体或替换资源。
 fs.copyFileSync('licenses/NotoSansSymbols2-OFL.txt', path.join(out, 'NotoSansSymbols2-OFL.txt'));
 fs.copyFileSync('licenses/MiSans-license.pdf', path.join(out, 'MiSans-license.pdf'));

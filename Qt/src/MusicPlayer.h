@@ -19,8 +19,10 @@ class MusicPlayer : public QObject {
     void stop();
     void setQuality(const QString &value);
     static QVector<QPair<QString, QString>> qualityOptions(const QString &provider);
+    static QString localQuality(const QJsonObject &track);
     static QString sourceQuality(const QString &provider, const QJsonObject &audio, bool trial = false);
     QString actualQuality;
+    QJsonObject localCovers;
     static QString identity(const QJsonObject &track);
     LyricsController lyrics;
     QJsonArray queue;

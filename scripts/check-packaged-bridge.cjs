@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const bridge = path.resolve(process.argv[2]);
+const { bridgeRuntime } = require('../Qt/tests/fixtures/bridge-runtime.cjs');
+const { bridge, runtime } = bridgeRuntime();
 const temp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'rhine-package-check-'));
 const hook = path.resolve(__dirname, '../Qt/tests/fixtures/bridge-http.cjs');
 const deviceContext = require(
@@ -12,23 +13,19 @@ const deviceContext = require(
 async function main() {
     let child;
     try {
-        child = spawn(
-            path.join(bridge, process.platform === 'win32' ? 'node.exe' : 'node'),
-            ['--require', hook, path.join(bridge, 'worker.cjs')],
-            {
-                cwd: bridge,
-                env: {
-                    ...process.env,
-                    TMPDIR: temp,
-                    TEMP: temp,
-                    LANG: 'en_US.UTF-8',
-                    RHINE_TEST_BRIDGE: bridge,
-                    RHINE_QQ_DEVICE_STATE_PATH: path.join(temp, 'qq-device.json'),
-                    RHINE_KUGOU_DEVICE_STATE_PATH: path.join(temp, 'kugou-device.json'),
-                },
-                stdio: ['pipe', 'pipe', 'pipe'],
+        child = spawn(runtime, ['--require', hook, path.join(bridge, 'worker.cjs')], {
+            cwd: bridge,
+            env: {
+                ...process.env,
+                TMPDIR: temp,
+                TEMP: temp,
+                LANG: 'en_US.UTF-8',
+                RHINE_TEST_BRIDGE: bridge,
+                RHINE_QQ_DEVICE_STATE_PATH: path.join(temp, 'qq-device.json'),
+                RHINE_KUGOU_DEVICE_STATE_PATH: path.join(temp, 'kugou-device.json'),
             },
-        );
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
         let errors = '';
         let buffer = '';
         const pending = new Map();

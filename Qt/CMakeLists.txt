@@ -3,6 +3,7 @@ qt_add_executable(RhineMusicDatabase WIN32 MACOSX_BUNDLE MANUAL_FINALIZATION ${R
 set_target_properties(RhineMusicDatabase PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set_source_files_properties(qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
 set_source_files_properties(qml/PerformancePanel.qml PROPERTIES QT_RESOURCE_ALIAS PerformancePanel.qml)
+set_source_files_properties(qml/WindowChrome.qml PROPERTIES QT_RESOURCE_ALIAS WindowChrome.qml)
 qt_add_qml_module(
     RhineMusicDatabase
     URI
@@ -13,4 +14,5 @@ qt_add_qml_module(
     "${CMAKE_BINARY_DIR}/RhineMusic"
     QML_FILES
     qml/Main.qml
-    qml/PerformancePanel.qml)
+    qml/PerformancePanel.qml
+    qml/WindowChrome.qml)

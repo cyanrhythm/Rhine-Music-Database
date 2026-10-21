@@ -116,6 +116,21 @@ macOS、Linux 和 Windows 默认使用 FFmpeg 音频后端。Windows 设置 `QT_
 
 **音质和完整播放取决于账号权限与音源可用性；返回试听时会明确提示。替代音源默认关闭，开启时使用锁定上游的匹配实现，音质由匹配来源决定，失败时可使用官方入口。本项目不提供音乐下载。**
 
+### 本地音乐
+
+在平台选择中切换到“本地音乐”，通过顶部“文件夹管理 ＋”打开导入与索引卡片，支持导入文件或递归导入文件夹。
+
+封面优先使用同目录的 `cover`、`folder` 或 `front` 图片，其次读取音频内嵌封面；歌词优先读取同名 `.lrc`，其次使用内嵌歌词。
+播放时缺少封面或歌词，会复用现有跨平台录音匹配，只补充缺失部分，不改写音频标签或音乐文件。
+本地模式禁用在线账号、推荐、平台检索、在线歌单写入与官方客户端播放入口；缺失歌词和封面的匹配仍可联网。
+在没有网络时，已导入的本地文件、封面及本地歌词仍可使用。
+本地歌词页可选择自动、本地或指定平台的歌词来源。
+本地音质根据文件名、编码格式、采样率和码率近似匹配网易云音质标识。
+
+目录中可用 `.rhineignore` 或 `.foliaignore` 排除文件，支持 `*`、`?`、`**`、目录末尾 `/`、根路径前导 `/` 及 `!` 否定规则。
+规则相对于其所在目录，后面的规则覆盖前面的规则，子目录规则继承父目录；已排除的目录不再遍历。
+修改规则后需重新扫描。索引与封面资产保存在应用数据目录。
+
 ## 从源码构建
 
 需要包含 Shader Tools 和 Multimedia 的 Qt **6.8+** desktop kit、CMake 3.24+、Ninja、Python 3、Node.js / npm，以及平台 C++ 编译器。建议各平台固定相同 Qt 补丁版本；自动构建使用 Qt 6.8.3 与 Node.js 22.14.0。Linux 还需要 Qt 的私有开发头文件（发行版包名通常是 `qt6-base-private-dev`、`qt6-multimedia-private-dev`）。
@@ -199,17 +214,6 @@ Qt RHI 使用私有头文件，升级 Qt 后需重新编译并验证。
 
 登录为可选功能。应用不读取浏览器或官方客户端的登录信息。
 
-## 参考项目
-
-- **[NeteaseCloudMusicApiEnhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)**: 网易云接入
-- **[MakcRe/KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi)**: 酷狗音乐标准版及概念版接入
-- **[yakult-green-tea/qq-music-api](https://github.com/yakult-green-tea/qq-music-api)**: QQ 音乐接入
-- **[LBEILC / RhineLabUI](https://github.com/LBEILC/RhineLabUI)**：特别感谢原界面、模型与场景作者，版权声明随项目保留。
-- **[LyricsX](https://github.com/MxIris-LyricsX-Project/LyricsX)**：歌词获取、解析与显示分层参考。
-- **[LyricsKit](https://github.com/MxIris-LyricsX-Project/LyricsKit)**：LRC、YRC、KRC 格式解析移植，
-  `MusicBridge/lyrics-format.cjs` 单独采用 MPL-2.0，固定版本与许可随包保留。
-- **[Lyrimuse](https://github.com/Yudaotor/lyrimuse)**：统一时间轴、歌词同步与录音版本匹配思路参考。
-
 ## 性能面板与诊断
 
 在「设置」中向下滚动至「性能与诊断」，点击「显示 / 隐藏 · F10」，即可打开性能面板；
@@ -225,6 +229,18 @@ GPU 耗时/占用未采集，同步和提交的 CPU 时间不代表 GPU 执行�
 最长十分钟自动导出，
 退出程序时也会保存进行中的录制。导出失败可重试。文件只包含性能数值和系统/图形后端信息，
 不包含账号、Cookie、搜索词、曲目、请求内容或截图。关闭面板且未录制时停止性能采样。
+
+## 参考项目
+
+- **[NeteaseCloudMusicApiEnhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)**: 网易云接入
+- **[MakcRe/KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi)**: 酷狗音乐标准版及概念版接入
+- **[yakult-green-tea/qq-music-api](https://github.com/yakult-green-tea/qq-music-api)**: QQ 音乐接入
+- **[LBEILC / RhineLabUI](https://github.com/LBEILC/RhineLabUI)**：特别感谢原界面、模型与场景作者，版权声明随项目保留。
+- **[LyricsX](https://github.com/MxIris-LyricsX-Project/LyricsX)**：歌词获取、解析与显示分层参考。
+- **[LyricsKit](https://github.com/MxIris-LyricsX-Project/LyricsKit)**：LRC、YRC、KRC 格式解析移植，
+  `MusicBridge/lyrics-format.cjs` 单独采用 MPL-2.0，固定版本与许可随包保留。
+- **[Lyrimuse](https://github.com/Yudaotor/lyrimuse)**：统一时间轴、歌词同步与录音版本匹配思路参考。
+
 
 ## 开源许可
 

@@ -5,6 +5,11 @@
 
 QString NativeHud::body() const {
     const auto item = m_music->current;
+    if (m_music->isLocal()) {
+        return item["path"].toString() + "\n" + item["format"].toString() + " / " +
+               QString::number(item["sampleRate"].toInt()) + " Hz / " +
+               QString::number(item["bitrate"].toInt()) + " kbps";
+    }
     if (item.isEmpty()) {
         return {};
     }
@@ -74,12 +79,18 @@ void NativeHud::detail(double width, double opacity) {
     const auto &player = music.player;
     const bool isCurrent = MusicPlayer::identity(item) == MusicPlayer::identity(player.current) &&
                            !player.loading && !player.failed;
-    const auto quality = isCurrent ? player.actualQuality : QString();
-    const auto badgeKey = "quality:" + music.provider + "-" + quality;
+    auto quality = isCurrent ? player.actualQuality : QString();
+    if (music.isLocal()) {
+        quality = MusicPlayer::localQuality(item);
+    }
+    const auto badgeProvider = music.isLocal() ? QStringLiteral("netease") : music.provider;
+    const auto badgeKey = "quality:" + badgeProvider + "-" + quality;
     const auto badge = quality.isEmpty() ? QImage() : m_host->image(badgeKey);
     double badgeWidth = 0;
     if (!quality.isEmpty()) {
-        hit(width * 0.927 - 55, 300, 110, 48, "quality:open", "音质说明与切换");
+        if (!music.isLocal()) {
+            hit(width * 0.927 - 55, 300, 110, 48, "quality:open", "音质说明与切换");
+        }
         if (!badge.isNull()) {
             constexpr double badgeHeight = 25;
             badgeWidth = badgeHeight * badge.width() / badge.height();
@@ -128,10 +139,11 @@ void NativeHud::detail(double width, double opacity) {
     actionButton("下一首播放", x + (buttonWidth + gap) * 2, 498, buttonWidth, "music:play-next");
     rule(x, 565, usable, 0.4);
     const auto column = (usable - gap) / 2;
-    const QVector<QPair<QString, QString>> meta{{"ARTIST / 歌手", item["artist"].toString()},
-                                                {"ALBUM / 专辑", item["album"].toString()},
-                                                {"DURATION / 时长", MusicData::time(item)},
-                                                {"PLAYBACK / 播放方式", "面板内播放 / 官方入口"}};
+    const QVector<QPair<QString, QString>> meta{
+        {"ARTIST / 歌手", item["artist"].toString()},
+        {"ALBUM / 专辑", item["album"].toString()},
+        {"DURATION / 时长", MusicData::time(item)},
+        {"PLAYBACK / 播放方式", music.isLocal() ? "本地文件 / 面板内播放" : "面板内播放 / 官方入口"}};
     for (int index = 0; index < meta.size(); ++index) {
         const auto xx = x + (index % 2) * (column + gap);
         const auto yy = 584 + (index / 2) * 64;
@@ -140,7 +152,7 @@ void NativeHud::detail(double width, double opacity) {
         limited(value.isEmpty() ? "暂无" : value, xx, yy + 23, 16, column - 12);
     }
     const QStringList keys{"overview", "notes", "history"};
-    const QStringList labels{"歌曲百科", "专辑信息", "同专辑"};
+    const QStringList labels{music.isLocal() ? "文件信息" : "歌曲百科", "专辑信息", "同专辑"};
     for (int index = 0; index < keys.size(); ++index) {
         const auto xx = x + index * usable / 3;
         button(labels.at(index), xx, 720, usable / 3 - 12, 38, "tab:" + keys.at(index), 15);
@@ -172,8 +184,10 @@ void NativeHud::detail(double width, double opacity) {
             text(lines.at(bodyOffset + index), x, 790 + index * 31, 16);
         }
     }
-    actionButton(music.provider != "netease" ? music.providerName() + " ↗" : "官方客户端 ↗", x, 910,
-                 buttonWidth, "music:official");
+    if (!music.isLocal()) {
+        actionButton(music.provider != "netease" ? music.providerName() + " ↗" : "官方客户端 ↗", x, 910,
+                     buttonWidth, "music:official");
+    }
     if (music.provider == "qq") {
         actionButton("试听片段", x + buttonWidth + gap, 910, buttonWidth, "music:preview");
     }
@@ -192,6 +206,9 @@ void NativeHud::lyricsPanel(double x, double width) {
     limited(player.current["title"].toString(), x, 278, 20, width - 85, "demibold");
     limited(player.current["artist"].toString(), x, 310, 13, width - 85);
     button("关闭", x + width - 60, 278, 60, 40, "player:lyrics-close", 14);
+    if (m_music->isLocal() && player.current["provider"] == "local") {
+        button("歌词来源 ⌃", x + width - 267, 914, 130, 32, "player:lyrics-sources", 13);
+    }
     constexpr double top = 360;
     constexpr double bottom = 889;
     const auto document = lyrics.document();
@@ -296,7 +313,14 @@ void NativeHud::lyricsPanel(double x, double width) {
         const auto direction = lyrics.offsetMs > 0 ? "已提前 " : "已延后 ";
         offsetLabel = QString(direction) + QString::number(std::abs(lyrics.offsetMs) / 1000, 'f', 1) + "s";
     }
-    text(offsetLabel, x + 284, 922, 12, "regular", 0, muted);
+    if (m_music->isLocal()) {
+        const auto offsetWidth = std::max(0.0, width - 563);
+        if (offsetWidth > 24) {
+            text(fit(offsetLabel, 12, offsetWidth), x + 284, 922, 12, "regular", 0, muted);
+        }
+    } else {
+        text(offsetLabel, x + 284, 922, 12, "regular", 0, muted);
+    }
     button("回到当前句", x + width - 125, 914, 125, 32, "player:lyrics-follow", 13);
 }
 
@@ -372,7 +396,9 @@ void NativeHud::container(double width, double opacity) {
         }
         button(label, sx, 913, sideWidth / 2, 32, "music:subscribe", 12);
     }
-    button(music.providerName() + " ↗", sx + sideWidth / 2, 913, sideWidth / 2, 32, "music:source", 12);
+    if (!music.isLocal()) {
+        button(music.providerName() + " ↗", sx + sideWidth / 2, 913, sideWidth / 2, 32, "music:source", 12);
+    }
     limited(item["title"].toString(), x, 279, 30, usable - 155, "bold");
     const auto total = music.directory ? music.directory->ids.size() : music.trackIDs.size();
     text(QString::number(songs.size()) + " / " +

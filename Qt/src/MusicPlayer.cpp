@@ -1,14 +1,43 @@
 #include "MusicPlayer.h"
-#include <QJsonDocument>
 #include <QFileInfo>
+#include <QUrl>
+#include <QJsonDocument>
 #include <QPointer>
 #include <QRandomGenerator>
 #include <QRegularExpression>
-#include <QUrl>
 #include <algorithm>
 
 QString MusicPlayer::identity(const QJsonObject &track) {
     return track["provider"].toString("netease") + ":" + track["id"].toString();
+}
+
+/** 本地音质近似分级 */
+QString MusicPlayer::localQuality(const QJsonObject &track) {
+    const auto name = QFileInfo(track["path"].toString()).completeBaseName().toLower();
+    const auto format = track["format"].toString().toLower();
+    const auto bitrateKbps = track["bitrate"].toInt();
+    if (name.contains("jymaster") || name.contains("母带") || name.contains("[master]") ||
+        name.contains("master quality")) {
+        return "jymaster";
+    }
+    if (name.contains("全景声") || name.contains("沉浸") || name.contains("dolby atmos") ||
+        name.contains("[atmos]") || name.contains("[sky]")) {
+        return "sky";
+    }
+    if (name.contains("jyeffect") || name.contains("臻音")) {
+        return "jyeffect";
+    }
+    const bool lossless =
+        QStringList{"flac", "ape", "wav", "aif", "aiff", "alac", "wv", "dsf", "dff"}.contains(format) ||
+        (format == "m4a" && bitrateKbps >= 700);
+    if (lossless) {
+        const bool highResolution = name.contains("hi-res") || name.contains("hires") ||
+                                    name.contains("高解析") || name.contains("24bit") ||
+                                    name.contains("24-bit") || track["sampleRate"].toInt() > 48000 ||
+                                    bitrateKbps > 1600;
+        return highResolution ? "hires" : "sq";
+    }
+    return bitrateKbps >= 192 || name.contains("320k") || name.contains("[hq]") ? "hq" : "standard";
 }
 
 /** 只识别本次可播放地址及其响应元数据；不读取偏好或歌曲可用音质列表。 */
@@ -123,6 +152,7 @@ MusicPlayer::MusicPlayer(Host *host, MusicApi *api, QObject *parent)
             quality)) {
         quality = "exhigh";
     }
+    localCovers = QJsonDocument::fromJson(host->preference("local-cover-cache").toUtf8()).object();
     alternative = host->preference("alternate-source") == "on";
     const auto saved = QJsonDocument::fromJson(host->preference("play-history").toUtf8()).array();
     const QRegularExpression identifier(QStringLiteral("^[a-zA-Z0-9_-]{1,80}$"));
@@ -136,6 +166,31 @@ MusicPlayer::MusicPlayer(Host *host, MusicApi *api, QObject *parent)
         }
     }
     connect(&lyrics, &LyricsController::changed, this, &MusicPlayer::changed);
+    connect(&lyrics, &LyricsController::coverMatched, this, [this](QString key, QString url) {
+        if (current["provider"] != "local" || LyricsController::trackKey(current) != key ||
+            !current["cover"].toString().isEmpty()) {
+            return;
+        }
+        const auto alive = valid(m_generation);
+        m_host->loadCover(url, [this, alive, url](QString image) {
+            if (alive() && !image.isEmpty()) {
+                coverImage = image;
+                current["cover"] = url;
+                const auto key = current["id"].toString() + ':' + current["fingerprint"].toString();
+                localCovers[key] = url;
+                while (localCovers.size() > 200) {
+                    localCovers.remove(localCovers.begin().key());
+                }
+                m_host->setPreference(
+                    "local-cover-cache",
+                    QString::fromUtf8(QJsonDocument(localCovers).toJson(QJsonDocument::Compact)));
+                if (index >= 0 && index < queue.size()) {
+                    queue.replace(index, current);
+                }
+                emit changed();
+            }
+        });
+    });
 }
 
 MusicApi::Valid MusicPlayer::valid(quint64 generation) {
@@ -143,7 +198,7 @@ MusicApi::Valid MusicPlayer::valid(quint64 generation) {
 }
 
 void MusicPlayer::enqueue(const QJsonObject &track, bool next) {
-    if (track["kind"] != "song") {
+    if (track["kind"] != "song" || (m_api->provider == "local") != (track["provider"] == "local")) {
         return;
     }
     for (qsizetype i = 0; i < queue.size(); ++i) {
@@ -162,7 +217,8 @@ void MusicPlayer::enqueue(const QJsonObject &track, bool next) {
 /** 停止旧音源并推进代数，先完成元数据再交付播放；迟到的地址不能恢复旧曲目。 */
 void MusicPlayer::play(QJsonObject track, std::optional<QJsonArray> source, std::optional<int> queueIndex,
                        bool preview) {
-    if (track["kind"] != "song") {
+    if (track["kind"] != "song" || (m_api->provider == "local" && track["provider"] != "local") ||
+        (m_api->provider != "local" && track["provider"] == "local")) {
         return;
     }
     if (source) {
@@ -225,20 +281,85 @@ void MusicPlayer::play(QJsonObject track, std::optional<QJsonArray> source, std:
 }
 
 void MusicPlayer::prepare(QJsonObject track, quint64 generation, bool reload) {
+    if (track["provider"] == "local") {
+        const QUrl source(track["url"].toString());
+        if (m_api->provider != "local" || !source.isLocalFile() ||
+            !QFileInfo(source.toLocalFile()).isReadable()) {
+            fail(QStringLiteral("本地文件无法访问，请检查文件位置或重新扫描"));
+            return;
+        }
+    }
+    if (track["provider"] == "local" && track["cover"].toString().isEmpty()) {
+        const auto key = track["id"].toString() + ':' + track["fingerprint"].toString();
+        if (localCovers.contains(key)) {
+            track["cover"] = localCovers[key];
+            current = track;
+        }
+    }
     if (!reload) {
         if (!track["cover"].toString().isEmpty()) {
             m_host->loadCover(track["cover"].toString(), [this, alive = valid(generation)](QString key) {
-                if (alive()) {
-                    coverImage = key;
-                    emit changed();
+                if (!alive()) {
+                    return;
                 }
+                coverImage = key;
+                if (key.isEmpty() && current["provider"] == "local") {
+                    current["cover"] = "";
+                    const auto cacheKey = current["id"].toString() + ':' + current["fingerprint"].toString();
+                    localCovers.remove(cacheKey);
+                    m_host->setPreference(
+                        "local-cover-cache",
+                        QString::fromUtf8(QJsonDocument(localCovers).toJson(QJsonDocument::Compact)));
+                    // 下一轮再补图，确保同步失败回调不会早于本次歌词初始化。
+                    m_host->schedule(0, [this, alive] {
+                        if (alive()) {
+                            lyrics.matchCover(current);
+                        }
+                    });
+                }
+                emit changed();
             });
         }
-        emit trackSelected(track);
-        lyrics.load(track);
+        emit trackSelected(current);
+        lyrics.load(current);
     }
+    if (track["provider"] == "local") {
+        const auto url = QUrl(track["url"].toString());
+        if (m_api->provider != "local" || !url.isLocalFile() || !QFileInfo(url.toLocalFile()).isReadable()) {
+            fail(QStringLiteral("本地文件无法访问，请检查文件位置或重新扫描"));
+            return;
+        }
+        m_host->mediaMetadata(track["title"].toString(), track["artist"].toString(),
+                              track["album"].toString());
+        if (!m_host->mediaLoad(url.toString())) {
+            fail(QStringLiteral("本地音频无法加载"));
+            return;
+        }
+        m_endSerial = m_host->mediaState().value("ended").toLongLong();
+        actualQuality = localQuality(track);
+        status = QStringLiteral("正在播放本地文件：") + track["format"].toString();
+        loading = false;
+        emit changed();
+        return;
+    }
+    // QQ 专有音质在其他平台转换为通用无损
     const auto qqQuality = quality == "best" || quality == "ape";
-    const auto effectiveQuality = qqQuality && m_api->provider != "qq" ? "lossless" : quality;
+    auto effectiveQuality = qqQuality && m_api->provider != "qq" ? "lossless" : quality;
+
+    // 网易云专有音质在其他平台转换为对应档位
+    if (m_api->provider != "netease") {
+        if (quality == "jymaster" || quality == "jyeffect" || quality == "sky") {
+            effectiveQuality = "lossless";
+        } else if (quality == "higher") {
+            effectiveQuality = "standard";
+        }
+    }
+
+    // 酷狗不支持 ape，转换为通用无损
+    if (m_api->provider == "kugou" && quality == "ape") {
+        effectiveQuality = "lossless";
+    }
+
     m_api->call(
         previewRequested ? "preview" : "playback", {track, effectiveQuality, alternative},
         [this, track](MusicReply result) {

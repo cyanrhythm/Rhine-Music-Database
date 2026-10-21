@@ -121,9 +121,13 @@ int main(int argc, char **argv) {
     qmlRegisterType<Hud>("Rhine.Native", 1, 0, "Hud");
     qmlRegisterUncreatableType<Engine>("Rhine.Native", 1, 0, "Engine", "Provided by application");
     QQmlApplicationEngine engine;
+    // 无边框
+    if (qEnvironmentVariableIntValue("RHINE_FRAMELESS_PREVIEW") == 1) {
+        engine.setInitialProperties({{"windowsFrameless", true}});
+    }
 #ifdef Q_OS_WIN
     // 创建窗口时先保持隐藏，配置管线缓存后再显示，避免首次渲染写到系统缓存。
-    engine.setInitialProperties({{"visible", false}});
+    engine.setInitialProperties({{"visible", false}, {"windowsFrameless", true}});
 #endif
     const auto fontId = QFontDatabase::addApplicationFont(root + "/RhineMiSans-regular.otf");
     const auto families = QFontDatabase::applicationFontFamilies(fontId);

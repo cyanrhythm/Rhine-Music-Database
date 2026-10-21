@@ -39,6 +39,13 @@ NativeHud::NativeHud(Host *host, Glyphs *glyphs, MusicLibrary *music, HudSceneAc
 }
 
 void NativeHud::openModal(QString kind) {
+    if (m_music->isLocal() &&
+        QStringList{"login", "quality", "playlist-picker", "playlist-form"}.contains(kind)) {
+        return;
+    }
+    if (kind == "discover" && m_music->isLocal()) {
+        kind = "local";
+    }
     ++m_searchGeneration;
     if (m_scene.pointer) {
         m_scene.pointer("pointercancel", 0, 0, 0);
@@ -256,6 +263,16 @@ void NativeHud::playerAction(const QStringList &parts) {
         m_lyricsBrowse.reset();
     } else if (name == "lyrics-earlier" || name == "lyrics-later") {
         player.lyrics.adjustOffset(name == "lyrics-earlier" ? 200 : -200);
+    } else if (name == "lyrics-sources" && music.isLocal() && player.current["provider"] == "local") {
+        if (modal == "lyrics-source" && !closing) {
+            closeModal();
+        } else {
+            openModal("lyrics-source");
+        }
+    } else if (name == "lyrics-source" && music.isLocal()) {
+        player.lyrics.selectLocalSource(player.current, parts.value(2));
+        m_lyricsBrowse.reset();
+        closeModal();
     } else if (name == "lyrics-retry") {
         if (!player.current.isEmpty()) {
             player.lyrics.load(player.current, true);
@@ -366,6 +383,49 @@ void NativeHud::action(QString value) {
         }
         return;
     }
+    if (value.startsWith("local:") && music.isLocal()) {
+        const auto name = parts.value(1);
+        const auto roots = music.local->roots();
+        if ((name == "folder" || name == "files") && !music.local->busy) {
+            emit localImportRequested(name == "folder");
+        } else if (name == "rescan") {
+            music.local->rescan();
+        } else if (name == "cancel") {
+            music.local->cancel();
+        } else if (name == "remove") {
+            const auto index = parts.value(2).toInt();
+            if (index >= 0 && index < roots.size()) {
+                confirmTitle = "移除索引：" + roots.at(index).toObject()["name"].toString();
+                const QPointer<MusicLibrary> owner(&music);
+                // 回调跨越确认面板的生命周期，必须复制字符串，不能捕获临时 JSON 字段引用。
+                const auto path = roots.at(index).toObject()["path"].toString();
+                m_confirm = [owner, path] {
+                    if (!owner || !owner->isLocal()) {
+                        return;
+                    }
+                    const auto current = owner->local->roots();
+                    for (int index = 0; index < current.size(); ++index) {
+                        if (current.at(index).toObject()["path"] == path) {
+                            owner->local->removeRoot(index);
+                            break;
+                        }
+                    }
+                };
+                openModal("confirm");
+            }
+        } else if (name == "browse") {
+            music.showSource(1);
+            closeModal();
+        } else if (name == "prev" || name == "next") {
+            listOffset =
+                std::clamp(listOffset + (name == "prev" ? -4 : 4), 0, std::max(0, int(roots.size()) - 4));
+        }
+        return;
+    }
+    if (music.isLocal() &&
+        (value.startsWith("discover:") || value.startsWith("quality") || value == "alternative")) {
+        return;
+    }
     if (value.startsWith("discover:")) {
         auto &discover = *music.discover;
         const auto name = parts.value(1);
@@ -447,7 +507,9 @@ void NativeHud::action(QString value) {
     }
     if (value == "discover") {
         openModal("discover");
-        music.discover->load();
+        if (!music.isLocal()) {
+            music.discover->load();
+        }
     } else if (value == "skip" || value == "back") {
         m_scene.mode("archive");
     } else if (QStringList{"search", "saved", "settings"}.contains(value)) {

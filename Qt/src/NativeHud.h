@@ -21,6 +21,7 @@ struct HudSceneActions {
 };
 
 class NativeHud : public QObject {
+    Q_OBJECT
   public:
     struct Row {
         int index = -1;
@@ -95,6 +96,9 @@ class NativeHud : public QObject {
     UiMotion::SurfaceMotion motion;
     std::optional<QRectF> playerSeekRect;
     std::optional<QRectF> playerVolumeRect;
+
+  signals:
+    void localImportRequested(bool folder);
 
   private:
     struct LyricRow {
@@ -192,6 +196,7 @@ class NativeHud : public QObject {
     void loginPanel(double x, double y, double width);
     void libraryPanel(double x, double y, double width);
     void discoverPanel(double x, double y, double width);
+    void localPanel(double x, double y, double width);
     void playerBar(double x, double y, double width);
     void playerPanel(double x, double y, double width);
     void platformChoices(double x, double y, double width, bool expanded = false);

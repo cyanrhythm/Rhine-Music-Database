@@ -181,6 +181,12 @@ void Host::requestJson(QString route, QJsonObject values, JsonReply callback) {
     if (stopped) {
         return;
     }
+    if (provider == "local" && route != "/local/lyrics" &&
+        !(route.startsWith("/native/") &&
+          QStringList{"search", "lyrics", "songs"}.contains(route.section('/', 3, 3)))) {
+        callback({}, QStringLiteral("本地模式已禁用在线平台操作"));
+        return;
+    }
     const auto service = routeProvider(route);
     auto token = cookies[service == "qq" ? "qqmusic_session" : "MUSIC_U"].toString();
     if (service == "kugou") {
@@ -452,7 +458,7 @@ bool Host::hasCredential(QString value) const {
  * 切换音乐来源，保持各来源的凭据与缓存隔离。
  */
 void Host::setProvider(QString value) {
-    if (value != "qq" && value != "netease" && value != "kugou") {
+    if (value != "qq" && value != "netease" && value != "kugou" && value != "local") {
         return;
     }
     if (provider == value) {
@@ -561,11 +567,47 @@ QString Host::fromLink(QString input) const {
     return kind + ":" + id;
 }
 void Host::loadCover(QString input, TextReply callback) {
+    const QUrl local(input);
+    if (local.isLocalFile()) {
+        if (provider != "local" && !offline) {
+            return;
+        }
+        const auto key = input;
+        if (images.contains(key)) {
+            callback(key);
+            return;
+        }
+        const auto generation = epoch;
+        auto watcher = new QFutureWatcher<QImage>(this);
+        connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, watcher, generation, key, callback] {
+            const auto image = watcher->result();
+            watcher->deleteLater();
+            if (generation == epoch && !stopped) {
+                if (!image.isNull()) {
+                    images.insert(key, new QImage(image), qMax(1, int(image.sizeInBytes() / 1024)));
+                }
+                callback(image.isNull() ? QString() : key);
+            }
+        });
+        watcher->setFuture(QtConcurrent::run([path = local.toLocalFile()] {
+            QImageReader reader(path);
+            const auto size = reader.size();
+            if (!size.isValid() || size.width() > 8192 || size.height() > 8192) {
+                return QImage();
+            }
+            if (size.width() > 1024 || size.height() > 1024) {
+                reader.setScaledSize(size.scaled(1024, 1024, Qt::KeepAspectRatio));
+            }
+            return reader.read();
+        }));
+        return;
+    }
     QUrl url(input.replace("http://", "https://"));
     const auto domain = url.host();
     if (!(domain == "music.126.net" || domain.endsWith(".music.126.net") || domain == "music.163.com" ||
           domain.endsWith(".music.163.com") || domain == "y.gtimg.cn" || domain == "qpic.y.qq.com" ||
           domain == "y.qq.com" || domain.endsWith(".kugou.com") || domain.endsWith(".kgimg.com"))) {
+        callback({});
         return;
     }
     QUrlQuery query(url);
@@ -578,6 +620,7 @@ void Host::loadCover(QString input, TextReply callback) {
         return;
     }
     if (offline) {
+        callback({});
         return;
     }
     if (coverFlights.contains(key)) {
@@ -606,7 +649,12 @@ void Host::loadCover(QString input, TextReply callback) {
                            bytes.size() < 8 * 1024 * 1024;
         reply->deleteLater();
         if (!valid) {
-            coverFlights.remove(key);
+            const auto waiters = coverFlights.take(key);
+            for (const auto &waiter : waiters) {
+                if (waiter.epoch == epoch) {
+                    waiter.callback({});
+                }
+            }
             return;
         }
         // 工作者只接触不可变字节和 QImage；回调与缓存仍在 Host 所在线程执行。
@@ -622,7 +670,15 @@ void Host::loadCover(QString input, TextReply callback) {
             for (const auto &waiter : waiters) {
                 current |= waiter.epoch == epoch;
             }
-            if (stopped || !current || image.isNull()) {
+            if (stopped || !current) {
+                return;
+            }
+            if (image.isNull()) {
+                for (const auto &waiter : waiters) {
+                    if (waiter.epoch == epoch) {
+                        waiter.callback({});
+                    }
+                }
                 return;
             }
             // QCache 按内存预算逐项淘汰，不再在第 32 张封面清空所有命中。
@@ -783,6 +839,7 @@ void Host::invalidateMetadata() {
 QString Host::preference(QString key) const {
     if (offline || !QStringList{"search-history",
                                 "play-history",
+                                "local-cover-cache",
                                 "theme",
                                 "motion",
                                 "disc-rotation",
@@ -813,6 +870,7 @@ void Host::setPreference(QString key, QString value) {
     if (!offline && value.size() < 262144 &&
         QStringList{"search-history",
                     "play-history",
+                    "local-cover-cache",
                     "theme",
                     "motion",
                     "disc-rotation",

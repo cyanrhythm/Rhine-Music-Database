@@ -43,6 +43,21 @@ void MusicLibrary::enterDirectory(QJsonObject value) {
     selectedPhysical = -1;
     status = QStringLiteral("正在打开：") + value["title"].toString();
     changed();
+    if (isLocal()) {
+        next->songs = local->tracks(value);
+        next->item["trackCount"] = next->songs.size();
+        for (const auto &song : next->songs) {
+            next->ids.append(song.toObject()["id"]);
+        }
+        next->cursor = next->ids.size();
+        next->albumsMore = false;
+        directoryLoading = false;
+        if (!next->songs.isEmpty()) {
+            choose(next->songs.first().toObject());
+        }
+        changed();
+        return;
+    }
     api.call(
         "detail", {value},
         [this, next, value](MusicReply result) {
@@ -74,7 +89,8 @@ void MusicLibrary::enterDirectory(QJsonObject value) {
 
 void MusicLibrary::loadArtistAlbums() {
     const auto folder = directory;
-    if (!folder || folder->item["kind"] != "artist" || folder->albumsLoading || !folder->albumsMore) {
+    if (isLocal() || !folder || folder->item["kind"] != "artist" || folder->albumsLoading ||
+        !folder->albumsMore) {
         return;
     }
     folder->albumsLoading = true;
@@ -97,6 +113,15 @@ void MusicLibrary::loadArtistAlbums() {
 }
 
 void MusicLibrary::openSongArtist(int index) {
+    if (isLocal()) {
+        const auto artist = current["artists"].toArray().at(index).toObject();
+        enterDirectory({{"provider", "local"},
+                        {"kind", "artist"},
+                        {"id", artist["id"]},
+                        {"key", "local:artist:" + artist["id"].toString()},
+                        {"title", artist["name"]}});
+        return;
+    }
     const auto artists = current["artists"].toArray();
     const auto artist = artists.at(index).toObject();
     static const QRegularExpression identifier(QStringLiteral("^[a-zA-Z0-9_-]{1,80}$"));
@@ -208,7 +233,9 @@ void MusicLibrary::showDirectoryInfo() {
     ++m_selectionGeneration;
     directoryInfo = true;
     current = directory->item;
-    loadSubscriptionStatus(current);
+    if (!isLocal()) {
+        loadSubscriptionStatus(current);
+    }
     detailLoading = false;
     tracks = directory->songs;
     trackIDs = directory->ids;

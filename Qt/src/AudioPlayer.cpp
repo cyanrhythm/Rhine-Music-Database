@@ -179,8 +179,9 @@ bool AudioPlayer::load(QString input, bool offline, bool alternative, QString pr
         alternative && std::any_of(providers.begin(), providers.end(), [&](const auto &domain) {
             return host == domain || host.endsWith("." + domain);
         });
-    if (offline ? !url.isLocalFile()
-                : (!(trusted || alternateHost) || !QStringList{"http", "https"}.contains(url.scheme()))) {
+    if ((offline || provider == "local")
+            ? !url.isLocalFile()
+            : (!(trusted || alternateHost) || !QStringList{"http", "https"}.contains(url.scheme()))) {
         return false;
     }
     // 酷狗音源沿用上游返回的协议与签名地址

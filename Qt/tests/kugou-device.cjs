@@ -3,10 +3,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const bridge = path.resolve(process.argv[2] || 'output/resources/MusicBridge');
+const { bridgeRuntime } = require('./fixtures/bridge-runtime.cjs');
+const { bridge, runtime } = bridgeRuntime();
 const temporary = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'rhine-kugou-edition-'));
 const hook = path.resolve(__dirname, 'fixtures/bridge-http.cjs');
-const runtime = path.join(bridge, process.platform === 'win32' ? 'node.exe' : 'node');
 async function request(edition) {
     const child = spawn(runtime, ['--require', hook, path.join(bridge, 'worker.cjs')], {
         cwd: bridge,

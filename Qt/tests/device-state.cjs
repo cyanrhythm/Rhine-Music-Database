@@ -6,8 +6,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'rhine-device-state-'));
 const devicePath = path.join(temporaryDirectory, 'qq-device.json');
-const bridge = path.resolve('output/resources/MusicBridge');
-const runtime = path.join(bridge, process.platform === 'win32' ? 'node.exe' : 'node');
+const { bridgeRuntime } = require('./fixtures/bridge-runtime.cjs');
+const { bridge, runtime } = bridgeRuntime();
 const modulePath = path.join(
     bridge,
     'node_modules/@yakult-green-tea/qq-music-api/dist/src/services/auth/deviceContext.js',

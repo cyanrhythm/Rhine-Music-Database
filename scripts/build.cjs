@@ -2,6 +2,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 // 版本与路径统一由 qt-kit 解析；发布版本号由 release-version 读取。
+const { createHash } = require('node:crypto');
+const { app: defaultAppPath, resourceDirectory } = require('./app-layout.cjs');
 const { buildVersion } = require('./release-version.cjs');
 const { spawnSync } = require('node:child_process');
 const qtKit = require('./qt-kit.cjs');
@@ -15,12 +17,6 @@ if (!win && !mac && !linux) {
 }
 const python = process.env.PYTHON || (win ? 'python' : 'python3');
 const nodeName = win ? 'node.exe' : 'node';
-// 部署目录按平台区分；Linux 使用 AppImage 标准前缀布局。
-const appPaths = new Map([
-    [true, 'output/RHINE MUSIC DATABASE.app'],
-    [false, linux ? 'output/RhineMusicDatabase.AppDir' : 'output/windows/RHINE MUSIC DATABASE'],
-]);
-const defaultAppPath = appPaths.get(mac);
 /**
  * 串行执行构建或部署命令，失败立即终止。
  * 命令和参数分开传递，不经过 Shell 解释。
@@ -43,12 +39,22 @@ function run(command, args = [], env = {}) {
 }
 
 function npmCi(folder) {
-    // 直接调用 node scripts/build.cjs 时没有 npm_execpath，退回 PATH 上的 npm。
-    const cli = process.env.npm_execpath;
-    const executable = win ? 'npm.cmd' : 'npm';
-    const command = cli ? process.execPath : executable;
-    const args = [
-        ...(cli ? [cli] : []),
+    // 直接调用 node scripts/build.cjs 时没有 npm_execpath：
+    // 优先用 Node 自带的 npm-cli.js（可由 node 直接执行），再退回 PATH 上的 npm。
+    const bundled = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const cli = process.env.npm_execpath || (fs.existsSync(bundled) ? bundled : '');
+    let command = 'npm';
+    let prefix = [];
+    if (cli) {
+        command = process.execPath;
+        prefix = [cli];
+    } else if (win) {
+        // Windows 的 npm 是 .cmd，不能直接 spawn，必须经 cmd.exe 执行。
+        command = 'cmd.exe';
+        prefix = ['/c', 'npm'];
+    }
+    run(command, [
+        ...prefix,
         'ci',
         '--prefix',
         folder,
@@ -56,8 +62,7 @@ function npmCi(folder) {
         '--ignore-scripts',
         '--no-audit',
         '--no-fund',
-    ];
-    run(command, args);
+    ]);
 }
 /**
  * 准备字体、模型、锁定桥接依赖和运行时资源；保持原有导出与检查顺序。
@@ -80,6 +85,12 @@ function prepareResources() {
     fs.mkdirSync(bridge, {
         recursive: true,
     });
+    // 只保留依赖缓存，清除已删除的旧源码和资源。
+    for (const name of fs.readdirSync(bridge)) {
+        if (name !== 'node_modules') {
+            fs.rmSync(path.join(bridge, name), { recursive: true, force: true });
+        }
+    }
     for (const file of [
         'worker.cjs',
         'qq.cjs',
@@ -98,24 +109,16 @@ function prepareResources() {
     fs.cpSync('MusicBridge/client', path.join(bridge, 'client'), {
         recursive: true,
     });
-    const bridgePackages = {
-        '@neteasecloudmusicapienhanced/api': '4.41.1',
-        '@yakult-green-tea/qq-music-api': '3.3.1',
-        kugoumusicapi: '1.6.2',
-    };
-    if (
-        Object.entries(bridgePackages).some(([name, version]) => {
-            try {
-                return (
-                    JSON.parse(fs.readFileSync(path.join(bridge, 'node_modules', name, 'package.json')))
-                        .version !== version
-                );
-            } catch {
-                return true;
-            }
-        })
-    ) {
+    // package lock 变更时重新安装依赖，避免旧版本残留
+    const dependencyHash = createHash('sha256')
+        .update(fs.readFileSync(path.join(bridge, 'package.json')))
+        .update(fs.readFileSync(path.join(bridge, 'package-lock.json')))
+        .digest('hex');
+    const stamp = path.join(bridge, 'node_modules', '.rhine-lock.sha256');
+    const installedHash = fs.existsSync(stamp) ? fs.readFileSync(stamp, 'utf8') : '';
+    if (installedHash !== dependencyHash) {
         npmCi(bridge);
+        fs.writeFileSync(stamp, dependencyHash);
     }
     const binary =
         process.env.RHINE_NODE_BINARY ||
@@ -849,12 +852,7 @@ function deployApp(qt, config, existingBundle = '') {
     if (!existingBundle && fs.existsSync(app)) {
         fs.renameSync(app, app + '.previous-' + Date.now());
     }
-    // 各平台资源目录：macOS 在 bundle 内，Linux 与程序同目录，Windows 在其下一级。
-    const resourcePaths = new Map([
-        [true, 'Contents/Resources'],
-        [false, linux ? 'usr/bin/resources' : 'resources'],
-    ]);
-    const resources = path.join(app, resourcePaths.get(mac));
+    const resources = path.join(app, resourceDirectory);
     if (mac && !existingBundle) {
         fs.cpSync('output/qt-build/RhineMusicDatabase.app', app, {
             recursive: true,
@@ -963,6 +961,15 @@ function deployApp(qt, config, existingBundle = '') {
     // 先部署 Qt，再装入大量 SDK 文件，避免部署工具逐个扫描非原生依赖。
     run(process.execPath, ['scripts/package-resources.cjs', resources]);
     fs.copyFileSync('LICENSE', path.join(resources, 'LICENSE'));
+    // 只复制第三方库的许可证文件，不复制源码包。
+    const thirdParty = path.join(resources, 'third-party');
+    fs.mkdirSync(path.join(thirdParty, 'taglib'), { recursive: true });
+    fs.mkdirSync(path.join(thirdParty, 'utfcpp'), { recursive: true });
+    fs.copyFileSync(path.join('vendor/taglib/COPYING.LGPL'), path.join(thirdParty, 'taglib/COPYING.LGPL'));
+    fs.copyFileSync(path.join('vendor/taglib/COPYING.MPL'), path.join(thirdParty, 'taglib/COPYING.MPL'));
+    fs.copyFileSync(path.join('vendor/taglib/source.json'), path.join(thirdParty, 'taglib/source.json'));
+    fs.copyFileSync(path.join('vendor/utfcpp/LICENSE'), path.join(thirdParty, 'utfcpp/LICENSE'));
+    fs.copyFileSync(path.join('vendor/utfcpp/source.json'), path.join(thirdParty, 'utfcpp/source.json'));
     fs.copyFileSync('vendor/qrcodegen/qrcodegen.hpp', path.join(resources, 'qrcodegen-LICENSE.hpp'));
     fs.cpSync('licenses/Qt', path.join(resources, 'Qt-Licenses'), {
         recursive: true,

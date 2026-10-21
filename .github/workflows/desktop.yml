@@ -118,8 +118,7 @@ jobs:
         run: npm run build
         env:
           QT_ROOT: ${{ env.QT_ROOT_DIR }}
-      # 与 macOS、Windows 走同一套离线回归：ctest、打包桥接、包体审计和冒烟启动。
-      # audit-qt.py 由 test.cjs 内部调用；先验证再打包，失败时不必产出分发包。
+      # 离线测试
       - name: Run offline regressions
         run: npm test
       - name: Create distribution ZIP

@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const bridge = path.resolve(process.argv[2] || 'output/resources/MusicBridge');
-const runtime = path.join(bridge, process.platform === 'win32' ? 'node.exe' : 'node');
+const { bridgeRuntime } = require('./fixtures/bridge-runtime.cjs');
+const { bridge, runtime } = bridgeRuntime();
 const hook = path.resolve(__dirname, 'fixtures/bridge-http.cjs');
 
 /** 在独立临时目录执行一组真实 IPC 请求，并始终清理本测试的桥接进程和文件。 */

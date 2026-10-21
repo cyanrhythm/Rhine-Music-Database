@@ -17,7 +17,7 @@ MusicLibrary::MusicLibrary(Host *host, const QJsonObject &content, QObject *pare
     : QObject(parent), host(host), api(host), player(host, &api), m_identityApi(host) {
     kugouEdition = host->preference("kugou-edition") == "lite" ? "lite" : "standard";
     provider = host->preference("provider");
-    if (!QStringList{"netease", "qq", "kugou"}.contains(provider)) {
+    if (!QStringList{"netease", "qq", "kugou", "local"}.contains(provider)) {
         provider = "netease";
     }
     api.provider = provider;
@@ -27,6 +27,15 @@ MusicLibrary::MusicLibrary(Host *host, const QJsonObject &content, QObject *pare
     }
     identityNames["kugou"] = host->preference("welcome-name-kugou-" + kugouEdition);
     restoreCachedAccount();
+    local = std::make_unique<LocalMusicLibrary>(QString(), host->offline);
+    connect(local.get(), &LocalMusicLibrary::changed, this, [this] {
+        if (isLocal()) {
+            refreshLocal();
+        }
+    });
+    if (isLocal()) {
+        refreshLocal();
+    }
     const auto categories = content["columns"].toArray();
     const auto records = content["records"].toArray();
     for (int lane = 0; lane < 5 && lane < categories.size(); ++lane) {
@@ -45,6 +54,15 @@ MusicLibrary::MusicLibrary(Host *host, const QJsonObject &content, QObject *pare
     discover = std::make_unique<MusicDiscover>(this);
     // 播放进度与歌词通知只刷新可见播放界面，不作废资源库场景。
     connect(&player, &MusicPlayer::changed, this, [this] {
+        if (isLocal() && current["key"] == player.current["key"] &&
+            current["fingerprint"] == player.current["fingerprint"] && !player.coverImage.isEmpty() &&
+            coverImage != player.coverImage) {
+            coverImage = player.coverImage;
+            coverKey = current["key"].toString();
+            current["cover"] = player.current["cover"];
+            details[coverKey] = current;
+            changed();
+        }
         ++revision;
         emit playbackInvalidated();
     });
@@ -73,6 +91,15 @@ QString MusicLibrary::providerName() const {
 QString MusicLibrary::sourceMessage(int lane) const {
     if (lane < 0 || lane >= 5) {
         return {};
+    }
+    if (isLocal()) {
+        if (local->busy) {
+            return local->status;
+        }
+        if (local->songs().isEmpty()) {
+            return QStringLiteral("暂无本地音乐，请在文件夹管理中导入");
+        }
+        return lane == 0 ? QStringLiteral("没有匹配的本地音乐") : QStringLiteral("暂无此类本地音乐");
     }
     if (lane == 0) {
         return searchLoading ? QStringLiteral("正在检索音乐，请稍候…") : status;
@@ -224,6 +251,12 @@ void MusicLibrary::choose(QJsonObject input, bool containerDetails, std::optiona
     }
     current = details.value(input["key"].toString(), input);
     loadCover(current);
+    if (isLocal()) {
+        detailLoading = false;
+        details[input["key"].toString()] = current;
+        changed();
+        return;
+    }
     loadSubscriptionStatus(current);
     detailLoading = true;
     if (input["kind"] != "song" && !containerDetails) {
@@ -311,7 +344,7 @@ void MusicLibrary::loadCover(const QJsonObject &value) {
     host->schedule(200, [this, value, alive] {
         if (alive()) {
             host->loadCover(value["cover"].toString(), [this, value, alive](QString key) {
-                if (alive()) {
+                if (alive() && !key.isEmpty()) {
                     coverImage = key;
                     coverKey = value["key"].toString();
                     changed();
@@ -322,6 +355,10 @@ void MusicLibrary::loadCover(const QJsonObject &value) {
 }
 
 void MusicLibrary::search(QString text, QString kind, bool more) {
+    if (isLocal()) {
+        searchLocal(text, kind);
+        return;
+    }
     const auto link = provider == "netease" && !more ? host->fromLink(text) : QString();
     if (!link.isEmpty()) {
         const auto type = link.section(':', 0, 0);
@@ -422,7 +459,7 @@ void MusicLibrary::search(QString text, QString kind, bool more) {
 void MusicLibrary::suggest(QString text) {
     const auto token = ++m_suggestGeneration;
     suggestions.clear();
-    if (text.trimmed().isEmpty() || provider == "kugou") {
+    if (text.trimmed().isEmpty() || provider == "kugou" || isLocal()) {
         return;
     }
     const auto qq = provider == "qq";
@@ -456,7 +493,7 @@ void MusicLibrary::showSource(int lane) {
         changed();
         return;
     }
-    privateSelection = lane > 0;
+    privateSelection = lane > 0 && !isLocal();
     if (directory) {
         leaveDirectory(false);
     }
@@ -465,7 +502,7 @@ void MusicLibrary::showSource(int lane) {
     const auto physical = physicalSlots[lane].value(rowMemory[lane], -1);
     emit selectionRequested(physical, {});
     observe(physical);
-    if (lane > 0) {
+    if (lane > 0 && !isLocal()) {
         if (restoringAccount) {
             loadMoreSource(lane);
         } else if (uid.isEmpty()) {
@@ -618,6 +655,9 @@ void MusicLibrary::loadLikedIDs(int lane, quint64 token, QString user) {
 }
 
 void MusicLibrary::loadMoreSource(int lane) {
+    if (isLocal()) {
+        return;
+    }
     if (lane < 0 || lane >= 5) {
         return;
     }
@@ -725,6 +765,9 @@ void MusicLibrary::loadMoreSource(int lane) {
 }
 
 void MusicLibrary::loadTrackPage(int start) {
+    if (isLocal()) {
+        return;
+    }
     if (current.isEmpty() || trackLoad || start + 3 < tracks.size() || trackCursor >= trackIDs.size()) {
         return;
     }
@@ -746,6 +789,12 @@ void MusicLibrary::loadTrackPage(int start) {
 }
 
 void MusicLibrary::sameAlbum() {
+    if (isLocal()) {
+        tracks = local->tracks({{"kind", "album"}, {"id", current["albumID"]}});
+        albumLoaded = true;
+        changed();
+        return;
+    }
     const auto song = current;
     if (song["kind"] != "song" || detailLoading || song["albumID"].toString().isEmpty() || albumLoaded) {
         return;
@@ -772,6 +821,9 @@ void MusicLibrary::sameAlbum() {
 }
 
 void MusicLibrary::loadSongWiki() {
+    if (isLocal()) {
+        return;
+    }
     wantsSongDetails = true;
     const auto value = current;
     if (value["kind"] != "song" || detailLoading || !value["wiki"].toString().isEmpty()) {
@@ -831,6 +883,9 @@ void MusicLibrary::playDirectory() {
 }
 
 void MusicLibrary::playOfficial(QJsonObject value) {
+    if (isLocal()) {
+        return;
+    }
     if (value.isEmpty()) {
         value = current;
     }
@@ -850,6 +905,9 @@ void MusicLibrary::playOfficial(QJsonObject value) {
 }
 
 QString MusicLibrary::sourceURL(QJsonObject value) const {
+    if (isLocal()) {
+        return {};
+    }
     if (value.isEmpty()) {
         value = current;
     }

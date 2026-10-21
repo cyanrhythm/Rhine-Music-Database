@@ -13,7 +13,7 @@ void NativeHud::libraryPanel(double x, double y, double width) {
         button("刷新个人库", x + width - 340, y + 147, 110, 33, "music:refresh-personal", 12);
     }
     rule(x + 53, y + 248, width - 106);
-    QStringList filters{"歌曲", "专辑", "歌单", "歌手"};
+    QStringList filters{"歌曲", "专辑", music.isLocal() ? "文件夹" : "歌单", "歌手"};
     if (modal == "saved") {
         filters = music.columns.mid(1, music.provider == "kugou" ? 3 : 4);
     }
@@ -94,7 +94,7 @@ void NativeHud::libraryPanel(double x, double y, double width) {
     }
     if (values.isEmpty()) {
         limited(music.sourceMessage(lane), x + 53, y + 501, 22, width - 106);
-        if (lane > 0 && music.uid.isEmpty() && !music.restoringAccount) {
+        if (!music.isLocal() && lane > 0 && music.uid.isEmpty() && !music.restoringAccount) {
             button("登录" + music.providerName() + " →", x + 53, y + 561, 300, 40, "music:login", 16);
         }
     }

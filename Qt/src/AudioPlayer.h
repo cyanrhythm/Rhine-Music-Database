@@ -8,7 +8,7 @@
 #include <functional>
 #include <memory>
 
-// 原生音频只接收已由锁定上游取得的播放链接；不保存链接或账号信息。
+// 在线模式只接收锁定上游的播放链接；本地模式只接收文件 URL
 class AudioPlayer {
   public:
     explicit AudioPlayer(std::function<void()> changed = {});

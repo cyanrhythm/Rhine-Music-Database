@@ -163,3 +163,9 @@ MusicBridge/lyrics-format.cjs 移植 LyricsKit 的 LyricsCore LRC 与 LyricsServ
 解析逻辑，采用 MPL-2.0。固定来源、版本及改编文件见 MusicBridge/lyrics-source.json；
 完整许可见 MusicBridge/LyricsKit-LICENSE。该文件的 MPL 许可单独保留，其他自维护源码沿用原许可。
 来源：https://github.com/MxIris-LyricsX-Project/LyricsKit 。发布包随附此文件的可编辑 JavaScript 源码。
+
+## 本地音乐标签
+
+TagLib 2.1.1，按 MPL-1.1 使用，源码未修改。来源：https://github.com/taglib/taglib/tree/v2.1.1 。
+utfcpp 4.0.6，BSL-1.0，源码未修改。来源：https://github.com/nemtrif/utfcpp/tree/v4.0.6 。
+固定版本完整源码包、许可证及 SHA-256 来源记录保留在 vendor/taglib 与 vendor/utfcpp，并随应用分发。

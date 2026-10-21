@@ -34,6 +34,30 @@ if(NOT TARGET Qt6::MultimediaPrivate)
 endif()
 qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
+# 标签读取
+include(FetchContent)
+set(BUILD_TESTING
+    OFF
+    CACHE BOOL "" FORCE)
+set(BUILD_BINDINGS
+    OFF
+    CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS
+    OFF
+    CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    utfcpp
+    URL "${CMAKE_CURRENT_SOURCE_DIR}/vendor/utfcpp/utfcpp-4.0.6.tar.gz"
+    URL_HASH SHA256=6920a6a5d6a04b9a89b2a89af7132f8acefd46e0c2a7b190350539e9213816c0)
+FetchContent_MakeAvailable(utfcpp)
+set(utf8cpp_INCLUDE_DIR
+    "${utfcpp_SOURCE_DIR}/source"
+    CACHE PATH "" FORCE)
+FetchContent_Declare(
+    taglib
+    URL "${CMAKE_CURRENT_SOURCE_DIR}/vendor/taglib/taglib-2.1.1.tar.gz"
+    URL_HASH SHA256=bd57924496a272322d6f9252502da4e620b6ab9777992e8934779ebd64babd6e)
+FetchContent_MakeAvailable(taglib)
 # 自维护源码和锁定的二维码库构成独立应用目标。
 set(RHINE_APP_SOURCES
     Qt/src/AppUpdater.cpp
@@ -70,6 +94,10 @@ set(RHINE_APP_SOURCES
     Qt/src/MusicPlayer.h
     Qt/src/MusicData.cpp
     Qt/src/MusicData.h
+    Qt/src/LocalMusicLibrary.cpp
+    Qt/src/LocalMusicLibrary.h
+    Qt/src/MusicLocal.cpp
+    Qt/src/NativeHudLocal.cpp
     Qt/src/MusicLibrary.cpp
     Qt/src/MusicLibrary.h
     Qt/src/NativeHud.h
@@ -133,14 +161,15 @@ add_library(RhineCore STATIC ${RHINE_CORE_SOURCES})
 target_include_directories(
     RhineCore
     PUBLIC Qt/src
-    PRIVATE vendor/qrcodegen)
+    PRIVATE vendor/qrcodegen "${taglib_SOURCE_DIR}/taglib" "${taglib_SOURCE_DIR}/taglib/toolkit"
+            "${taglib_BINARY_DIR}")
 target_compile_definitions(
     RhineCore PUBLIC RHINE_APPLICATION_ID="${RHINE_APPLICATION_ID}" RHINE_VERSION="${PROJECT_VERSION}"
                      RHINE_RELEASE_BUILD=$<BOOL:${RHINE_RELEASE_BUILD}>)
 target_link_libraries(
     RhineCore
     PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::Concurrent Qt6::Multimedia
-    PRIVATE Qt6::MultimediaPrivate)
+    PRIVATE Qt6::MultimediaPrivate tag)
 add_subdirectory(Qt)
 target_link_libraries(RhineMusicDatabase PRIVATE RhineCore)
 set_source_files_properties(Qt/qml/Main.qml TARGET_DIRECTORY RhineMusicDatabase PROPERTIES QT_RESOURCE_ALIAS
@@ -386,3 +415,12 @@ if(MSVC)
 endif()
 add_test(NAME qt_updater_regression COMMAND RhineUpdaterRegression)
 set_tests_properties(qt_updater_regression PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+qt_add_executable(RhineLocalMusicRegression Qt/tests/LocalMusicChecks.cpp)
+target_link_libraries(RhineLocalMusicRegression PRIVATE RhineCore)
+if(MSVC)
+    target_compile_options(RhineLocalMusicRegression PRIVATE /utf-8)
+endif()
+add_test(NAME qt_local_music_regression COMMAND RhineLocalMusicRegression
+                                                "${CMAKE_CURRENT_SOURCE_DIR}/output/resources")
+set_tests_properties(qt_local_music_regression PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

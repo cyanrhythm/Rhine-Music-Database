@@ -4,6 +4,7 @@
 #include "NativeApplication.h"
 #include <QElapsedTimer>
 #include <QVariantMap>
+#include <QUrl>
 #include <QQuickWindow>
 #include <QPointer>
 #include <atomic>
@@ -39,6 +40,7 @@ class Engine : public QObject {
     QString root() const {
         return host.root;
     }
+    Q_INVOKABLE void importLocal(QList<QUrl> urls);
     Q_INVOKABLE void resize(double width, double height);
     Q_INVOKABLE void action(QString action);
     Q_INVOKABLE void submitForm(QString account, QString password);
@@ -110,6 +112,7 @@ class Engine : public QObject {
     void hitsChanged();
     void clearCredentials();
     void performanceRequested();
+    void localImportRequested(bool folder);
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
